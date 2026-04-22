@@ -1,0 +1,738 @@
+================================================================================
+                    DMR MCP ICI HSLE EXECUTION FLOW
+                    ================================
+  Model: ZSE5_DMR_MCP_1S_ICI_FULLSTACK_HSLE (ZeBu ZSE5 emulation)
+  Config: MCP 1-Socket ICI, 2 IMH dies (imh8 + imh9), 4 CBB dies, fullstack UCIe
+  Reference Run: mcp_ici_hsle_svos_fmod.0 (26ww12_2)
+  Input Dir: 26ww11.4_imh2_mcp_ici/input_dir
+================================================================================
+
+
+===============================================================================
+STAGE 0: SPARK BOOTSTRAP
+===============================================================================
+Source: SPARK framework (spark-1.12.11)
+
+  [bootstrap]
+   |
+   |-- Initializes Simics environment (loads packages, sets up simics path)
+   |-- Reads runtime args from:
+   |     - input_dir/args.yml            (command-line argument definitions)
+   |     - input_dir/options.yml         (option defaults)
+   |     - cbb/testbench/spark/args.yml  (CBB-specific args)
+   |     - cbb/testbench/spark/options.yml
+   |-- Reads emurun_defaults.simics (generated per run from CRT/maestro)
+   |-- Sets up cmd_line_opt.* variables (mcp_hsle=True, fullstack_en=True,
+   |     cbbpunit_imhpunit_s3m_fmod=True, emu_engine=zse_engine, etc.)
+   |
+   |-- Runs pre-setup script: test/zse_premount.simics
+   |     (ZSE-specific pre-mount configuration)
+   |
+   +-- HANDOFF → input_dir/sle.simics  (main entry point)
+       Message: "Running sle.simics setup_script: input_dir/sle.simics"
+
+
+===============================================================================
+STAGE 1: SLE.SIMICS — MAIN SCRIPT INITIALIZATION (Pre-emulation setup)
+===============================================================================
+Source: input_dir/sle.simics (1379 lines)
+
+  [sle.simics] "Project Simics script loading"
+   |
+   |-- 1.1 GLOBAL VARIABLE INITIALIZATION
+   |     Sets $cold_boot=1, reset flags, $input_dir="input_dir",
+   |     $model_root, $workarea from env WORKAREA
+   |     Adds Python paths: input_dir/cbb/testbench/py_lib, input_dir/python
+   |
+   |-- 1.2 EXIT HANDLER REGISTRATION
+   |     Registers my_exit_handler via SIM_hap_add_callback('Core_At_Exit')
+   |     On exit: writes to test/results.log (HANG/ACED/DEAD/SHUTDOWN)
+   |     Calls end_of_run.simics (input_dir/simics_scripts/end_of_run.simics)
+   |
+   |-- 1.3 VP PLATFORM SETUP (BRANCHING POINT)
+   |     *** KEY DECISION ***
+   |     if (cmd_line_opt->mcp_hsle):   [TRUE in this run]
+   |         HANDOFF → input_dir/simics_scripts/hsle/vp.simics
+   |     else:
+   |         → input_dir/simics_scripts/hsle/vp_sle.simics
+   |
+   |     (See STAGE 2 below for vp.simics details)
+   |     After vp.simics returns, sle.simics continues...
+   |
+   |-- 1.4 PYTHON HELPER LOADING
+   |     → input_dir/python/simics_HierarchyPaths.py  (hierarchy path definitions)
+   |     → input_dir/python/determine_model.py         (determines model_name)
+   |       Output: model_name = "mcp_1s_ici"
+   |
+   |-- 1.5 EMULATION ENGINE UTILITIES
+   |     → input_dir/python/emu_util.py        (setup function for emu engine)
+   |     → input_dir/python/emu_configdb.py    (loads test/emurun.dut_cfg)
+   |
+   |-- 1.6 RTI CYCLE TRACKING (script-branch "rtl_startup")
+   |     Async branch that logs: Pre Cycle 0, Hit cycle_0, cycle_1, cycle_100k
+   |
+   |-- 1.7 PCODE/ACODE DIRECTORY RESOLUTION
+   |     → input_dir/python/resolve_pcode_directory.py     (if enable_pcode_loading)
+   |     → input_dir/python/resolve_cbb_pcode_directory.py
+   |     → input_dir/python/resolve_cbb_acode_directory.py
+   |
+   |-- 1.8 ZSE ENGINE CONFIGURATION
+   |     - Loads ZSE modules: zse_flex_probes, zse_tracker, expression
+   |     - Sets engine parameters (zse_model_name, zse_model_dir, etc.)
+   |     - Loads emu_xtorgroup_component
+   |
+   |-- 1.9 TRANSACTOR GROUP CONFIGURATION (xtor groups for ZSE)
+   |     Groups xtors by type for performance. For each group:
+   |       → input_dir/simics_scripts/auto_xtorgroups.simics
+   |     Groups created:
+   |       - xtorgroup_clk           (clock transactors)
+   |       - xtorgroup_iosf_primary  (IOSF primary bus)
+   |       - xtorgroup_iosf_sb       (IOSF sideband)
+   |       - xtorgroup_idi           (IDI core xtors)
+   |       - xtorgroup_dfi_0/1       (DDR DFI xtors)
+   |       - xtorgroup_pcie_*        (if PCIe enabled)
+   |
+   |-- 1.10 SHARED LIBRARY LOADING
+   |     → input_dir/lib/emu_mca_mon.so                 (MCA tracker)
+   |     → lib/libemubuildtb.so                          (build testbench)
+   |     → input_dir/lib/libxtor_ucie_tracker_svs.so    (UCIe RDI tracker)
+   |     → input_dir/lib/libibl_arcsem_monitor64_zebu.so (ARC SEM tracker)
+   |     → input_dir/lib/libibl_sigmon64_zebu.so         (signal monitor)
+   |     → input_dir/lib/hwrs_hw_monitor64_zebu.so       (HWRS tracker, if enabled)
+   |
+   |-- 1.11 ZSE EMULATION CONNECT
+   |     "RTI: Pre Mount"
+   |     emu.engine->connect = TRUE    [Connects to ZeBu hardware]
+   |     "RTI: Mounted"
+   |     (This is a BLOCKING step — waits for ZeBu board PCIe connection)
+   |     Loads ZeBu memories: ESE ROM, CPLD flash, QAT ROM, etc.
+   |
+   |-- 1.12 SINGLE STEP DETECTION
+   |     → input_dir/simics_scripts/single_step_detection.simics
+   |
+   |-- 1.13 CLOCK OBJECTS
+   |     → input_dir/simics_scripts/create_clock_objects.simics
+   |
+   |-- 1.14 PERIPHERAL TRANSACTORS
+   |     → input_dir/simics_scripts/i3c_xtor.simics    (I3C bus)
+   |     → input_dir/simics_scripts/gpio_xtor.simics   (GPIO for imh8)
+   |     → input_dir/simics_scripts/imh9_simics_scripts/gpio_xtor.simics (GPIO for imh9)
+   |     (gpio_xtor sets up wait-for-log on "RESET_PHASE_3_INFRA is complete")
+   |
+   |-- 1.15 JEM TRACKER LIBRARIES
+   |     (Loaded earlier at connect time for ZSE)
+   |
+   |-- 1.16 BIOS/TEST FILE VALIDATION
+   |     Validates existence of:
+   |       - test/ubios_flashOnly.mem  (BIOS flash memory)
+   |       - test/<testname>.32.obj    (32-bit test object)
+   |       - test/<testname>.obj       (8-bit test object)
+   |       - test/<testname>_flashOnly.obj
+   |       - test/<testname>.mem
+   |     Quits if any missing.
+   |
+   |-- 1.17 TRACERS AND FWC
+   |     → input_dir/python/tracers.py     (enables selected trackers per configdb)
+   |     → input_dir/python/fwc.py         (firmware controller, run in script-branch)
+   |
+   |-- 1.18 FUSE LOADING
+   |     (enable_fuse_loading = True, model_name = "mcp_1s_ici")
+   |     → input_dir/python/fuse_load_2imh.py
+   |       - Loads fuse ROM memory objects for imh8 and imh9 dies
+   |       - Creates memory objects per fuse bank (M0_A0, M0_A1, M4_A0, ... M16_A1)
+   |       - Downloads .mem files from test/fuse_image_imh8/ and test/fuse_image_imh9/
+   |       - Waits for fuse sense FSM done (posedge trigger)
+   |
+   |-- 1.19 PRIMECODE LOADING
+   |     (enable_pcode_loading = True)
+   |     → input_dir/python/primecode.py
+   |       - Resolves primecode image path for IMH
+   |       - Reads reset_seq.xml for valid primecode stages
+   |       - Loads primecode memory images for emulation
+   |
+   |-- 1.20 IOSF SB XTOR
+   |     → input_dir/simics_scripts/pythonSv/iosf_sb_xtor.simics
+   |
+   |-- 1.21 S3M LOADING
+   |     (enable_s3m_loading = True)
+   |     → input_dir/python/mem_load.py  (mem_load.load_s3m())
+   |       - Loads S3M firmware images into S3M/IBL memory banks
+   |       - S3M FW: bootstrap, secure_rt, normal_rt, fmc, vpm binaries
+   |     → input_dir/python/cpld_load.py
+   |       - Loads CPLD images
+   |
+   |-- 1.22 CBB RESET SCRIPT (script-branch "cbb_reset")
+   |     HANDOFF → input_dir/cbb/testbench/spark/sle.simics
+   |     (See STAGE 4 below — runs in PARALLEL as script-branch)
+   |
+   |-- 1.23 D2D DEBUG
+   |     (script-branch "cbb_debug_d2d")
+   |     → input_dir/simics_scripts/cbb_debug_d2d.simics
+   |
+   |-- 1.24 IMH FORCES AND RESET PHASE MARKERS
+   |     → input_dir/simics_scripts/bios_fetchor_control.simics (BIOS fetch control)
+   |     → input_dir/simics_scripts/dmr_imh_forces.simics       (IMH RTL forces)
+   |     *** ICI-specific ***:
+   |     → input_dir/simics_scripts/reset_phase_marker_2imh.simics (reset phase tracking)
+   |     → input_dir/simics_scripts/dmr_2imh_only_forces.simics    (2-IMH forces)
+   |
+   |-- 1.25 NON-DCM0 ICECODE
+   |     → input_dir/simics_scripts/non-DCM0-IceCode.simics
+   |
+   |-- 1.26 RAS/RCA MONITORING
+   |     → input_dir/simics_scripts/rca_signal_monitor.simics
+   |
+   |-- 1.27 PLATFORM TRANSACTORS
+   |     → input_dir/simics_scripts/pega_xtor.simics   (PEGA transactor)
+   |     → input_dir/simics_scripts/svid_vr_en.simics  (SVID voltage regulator)
+   |
+   |-- 1.28 D2D/IO TRANSACTORS
+   |     → input_dir/simics_scripts/d2d_iosf_pmsb_xtor.simics    (PM sideband)
+   |     → input_dir/simics_scripts/imh9_simics_scripts/d2d_iosf_imh9_pmsb_xtor.simics
+   |     → input_dir/simics_scripts/spi_xtor.simics               (SPI bus)
+   |     → input_dir/simics_scripts/espi_xtor.simics              (eSPI bus)
+   |     → input_dir/simics_scripts/dfi_xtor.simics               (DDR DFI)
+   |     → input_dir/simics_scripts/tpm_xtor.simics               (TPM)
+   |     → input_dir/simics_scripts/pm_hlm.simics                 (PM HLM)
+   |
+   |-- 1.29 UCIE IGNITE FULLSTACK (mcp_hsle path)
+   |     *** KEY HSLE SECTION ***
+   |     → input_dir/simics_scripts/hsle/ucie_ignite/uxi_fullstack_ucie.simics
+   |     → input_dir/simics_scripts/hsle/ucie_ignite/uxi_fullstack_ucie_cbb1.simics
+   |     → input_dir/simics_scripts/hsle/ucie_ignite/uxi_fullstack_ucie_cbb2.simics
+   |     → input_dir/simics_scripts/hsle/ucie_ignite/uxi_fullstack_ucie_cbb3.simics
+   |     → input_dir/simics_scripts/hsle/ucie_ignite/ucie_ignite_connection_4cbb_ici.simics
+   |       (Sets up UCIe ignite connections between IMH and all 4 CBB dies)
+   |
+   |-- 1.30 HSLE MAIN SCRIPT
+   |     *** KEY HANDOFF ***
+   |     HANDOFF → input_dir/simics_scripts/hsle/hsle.simics
+   |     (See STAGE 3 below)
+   |
+   |-- 1.31 PRIMECODE MONITORS
+   |     → input_dir/simics_scripts/primecode_monitors.simics
+   |       (Monitors primecode state completion on all dies)
+   |
+   |-- 1.32 POST-SETUP SCRIPTS
+   |     → input_dir/simics_scripts/lt.simics                           (Launch Technology)
+   |     → input_dir/simics_scripts/simics_post_setup_scripts/pll_en.simics (PLL enable)
+   |
+   |-- 1.33 LOG LEVEL REDUCTION (EfficiencyWG)
+   |     Reduces log levels for all hybrid compute modules to 0
+   |     Keeps emu.engine at level 1
+   |
+   |-- 1.34 ACED/TEST END MONITOR (script-branch)
+   |     Polls every 5M cycles for TEST_END file
+   |     On ACED (exit_code=0): writes "ACED" to test/results.log, quits
+   |     On SHUTDOWN (2), LT SHUTDOWN (3), DEAD (6): similar handling
+   |
+   |-- 1.35 POST-SETUP SCRIPTS FROM CMD LINE
+   |     → test/svos_post.simics           (SVOS post-boot monitoring)
+   |     → test/PPR_auto_exit_svos.simics  (PPR auto-exit for SVOS)
+   |
+   +-- 1.36 SIM_continue → EMULATION STARTS RUNNING
+
+
+===============================================================================
+STAGE 2: VP.SIMICS — VIRTUAL PLATFORM SETUP (Simics VP side)
+===============================================================================
+Source: input_dir/simics_scripts/hsle/vp.simics (251 lines)
+Called from: sle.simics step 1.3 (when mcp_hsle=True)
+
+  [vp.simics] "Running vp.simics script"
+   |
+   |-- 2.1 VP CONFIGURATION
+   |     $hsle_directory = "input_dir/simics_scripts/hsle"
+   |     $multicore = 1
+   |     preset_params:
+   |       soc_config = "ucc"
+   |       soc_revision = "b0"
+   |       num_cpus = 1
+   |       core_type = "pnc"
+   |       n_cores = 16, n_threads = 1
+   |       gpu = "None"
+   |       artifactory = False
+   |       board_id = 69
+   |
+   |-- 2.2 BIOS CONFIGURATION
+   |     bios = <IFWI file path> (overridden by cmd_line_opt->hybrid_bios if set)
+   |     bios2 = <second SPI IFWI>
+   |     Folder handling for dual SPI (ifwi1.bin / ifwi2.bin)
+   |
+   |-- 2.3 FMOD ENABLING
+   |     *** KEY HSLE FEATURE ***
+   |     if cbbpunit_imhpunit_s3m_fmod=True:
+   |       $s3m_fmod = TRUE
+   |       $cbbpunit_fmod = TRUE
+   |       $imhpunit_fmod = TRUE
+   |
+   |     For each enabled fmod:
+   |       → input_dir/simics_scripts/hsle/fmod/imhpunit.simics  (IMH punit fmod)
+   |       → input_dir/simics_scripts/hsle/fmod/cbbpunit.simics  (CBB punit fmod)
+   |       → input_dir/simics_scripts/hsle/fmod/s3m.simics       (S3M fmod)
+   |       (s3m fmod also sets s3m_params_feature_disable=0x2 for UART bypass)
+   |
+   |-- 2.4 OS IMAGE
+   |     disk_image = /nfs/.../svos/26WW09.3/sut-diamondrapids-efi.amd64.craff
+   |
+   |-- 2.5 HYBRID MAPPING
+   |     $hybrid_mapping = test/dmr-mcp-ici_mapping.simics
+   |       (or default: hsle_directory/idi_hybrid_comp_s0_cbb0_Core0.switches.smart.mapping_ref.simics)
+   |
+   |-- 2.6 DDR CONFIGURATION
+   |     16 DIMMs configured (8 per IMH die), DDR5 type
+   |     SPD info: hsle/ddr_collaterals/004_D94_0p5/DDR5_16GB_SRx8_4800_DDR5_RDIMM_IDT_Hynix.txt
+   |     $ddr_collaterals = hsle/ddr_collaterals/8000-simics.txt
+   |
+   |-- 2.7 MRC MEMORY FLOW CONFIGURATION
+   |     Selectively enables/disables MRC memory training flows via bitmask
+   |     (mrc_mem_flows_lo, mrc_mem_flows_hi, mrc_mem_flows_ext)
+   |
+   |-- 2.8 SIMICS TARGET LOADING
+   |     *** KEY STEP ***
+   |     $yml_script = "oakstream-rio/1_socket_ucc-generic"
+   |     $host_name = "oakstream-rio"
+   |     $presets = [input_dir/simics_scripts/hsle/preset/preset.yml]
+   |     → global_cmds.load_target(target, namespace, presets, **preset_params)
+   |       (Instantiates full OakStream RIO platform model with all VP components:
+   |        S3M, PUnit, memory controllers, PCIe, NVMe, UART console, etc.)
+   |
+   |-- 2.9 UART CAPTURE
+   |     oakstream_rio.serconsole.con.capture-start test/uart.log
+   |
+   |-- 2.10 PROCESSOR DISCOVERY
+   |     Discovers all x86 processor objects in Simics
+   |
+   +-- RETURNS to sle.simics
+
+
+===============================================================================
+STAGE 2-ALT: VP_SLE.SIMICS — NON-HSLE VP SETUP
+===============================================================================
+Source: input_dir/simics_scripts/hsle/vp_sle.simics (52 lines)
+Called from: sle.simics step 1.3 (when mcp_hsle=False)
+
+  [vp_sle.simics] "Running setup script"
+   |
+   |-- Similar to vp.simics but simpler:
+   |     - No fmod support
+   |     - BIOS from input_dir/simics_scripts/hsle/bios/ifwi1.bin (local copy)
+   |     - No OS image by default
+   |     - Loads target, starts UART capture
+   |     - Disables all Simics cores (pdisable -all) — pure SLE mode
+   |
+   +-- RETURNS to sle.simics
+
+
+===============================================================================
+STAGE 3: HSLE.SIMICS — HYBRID SYSTEM LEVEL EMULATION CORE SETUP
+===============================================================================
+Source: input_dir/simics_scripts/hsle/hsle.simics (207 lines)
+Called from: sle.simics step 1.30
+
+  [hsle.simics]
+   |
+   |-- 3.1 RAM QUEUE FIX (script-branch)
+   |     Assigns emu.engine as queue for all RAM objects
+   |     (dev_ram_cbb0_compute0_dcm1 through dev_ram_cbb0_compute3_dcm7)
+   |
+   |-- 3.2 HYBRID XTOR SETUP
+   |     → input_dir/simics_scripts/hsle/idi_xtor/idi_setup.simics
+   |       (Sets up IDI hybrid transactors for all CBB die compute tiles)
+   |       Creates IDI xtors: idi_core_xtor_cbb0_compute0_dcm1...dcm7,
+   |                          idi_core_xtor_cbb0_compute1_dcm0...dcm7, etc.
+   |       (30 IDI xtors total for 30 non-BSP cores)
+   |
+   |-- 3.3 CORE PMA (optional)
+   |     if hybrid_core_pma:
+   |       → input_dir/simics_scripts/hsle/core_pma/core_pma.simics
+   |
+   |-- 3.4 UMM (Universal Memory Model)
+   |     if umm_enable:
+   |       → input_dir/simics_scripts/hsle/umm/address_translator.simics
+   |
+   |-- 3.5 ESPI PASSTHROUGH (optional)
+   |     if espi_passthrough:
+   |       → input_dir/simics_scripts/hsle/xos/espi_xtor_passthrough.simics
+   |
+   |-- 3.6 OUTSIDE MEMORY HANDLING
+   |     sim->handle_outside_memory = TRUE
+   |
+   |-- 3.7 HSLE VP CORE SWITCH MONITOR (script-branch "HSLE VP core switch monitor")
+   |     *** THIS IS THE CRITICAL HSLE FLOW ***
+   |
+   |     3.7a S3M FMOD BYPASS (if cbbpunit_imhpunit_s3m_fmod=True)
+   |       Sets FW_BYPASS_0 = 0x00028 on S3M[0] and S3M[1]
+   |       (Bypasses S3M FW authentication for faster boot)
+   |
+   |     3.7b DISABLE VP EXECUTION
+   |       pdisable -all  (Stops all Simics VP cores)
+   |       *** VP cores are OFF during RTL reset ***
+   |
+   |     3.7c WAIT FOR RTL CORE RESET (ZSE engine)
+   |       "Waiting for RTL Core Reset"
+   |       Waits for: soc_tb.soc.cbb0.cbb_compute_0.par_compute_core0_wrp.
+   |                  core.core_server_inst.c2urequnnnh_address[51:0] == 0xFFFFFFE0
+   |       (RTL core's first fetch address after reset — reset vector)
+   |
+   |     --- At this point, RTL has completed all reset phases 1-5 ---
+   |     --- Reset phase 6 begins ---
+   |
+   |     3.7d UCLK UNGATING FIX
+   |       "UCLK Ungating fix in effect for CBB0"
+   |       Forces fil_control_1.uclk_gating_disable = 1 for Core0 and Core7
+   |
+   |     3.7e WAIT FOR IDI FLUSH
+   |       "Waiting for IDI to flush"
+   |       wait_for_cycle("hsle.simics", "relative", 5000000)
+   |       (Waits 5M cycles for IDI pipeline to drain)
+   |       Maps UART I/O space: idi_hybrid_comp_s0_cbb0_Core0.add-map-io base=0x3f8 size=0x8
+   |
+   |     3.7f ENABLE HYBRID CORES
+   |       "Enabling Hybrid Core(s)"
+   |       If core_pma: waits for SB xtors IDLE, then runs core_pma_hybrid.simics
+   |
+   |     3.7g IDI MUX ENABLING
+   |       "IDI Mux enabling"
+   |       For Core0 (idi_core_xtor_0):
+   |         credits_c2u_req = 12
+   |         credits_c2u_rsp = 8
+   |         credits_c2u_data = 8
+   |         enable = 1
+   |         transaction_shadower (mem + io) enable_primary = TRUE
+   |       For Core7/multicore (idi_core_xtor_1): same
+   |       "IDI Mux enabled"
+   |
+   |     *** HYBRID SWITCH COMPLETE ***
+   |     VP cores (Simics x86 ISS) now handle instruction execution
+   |     RTL IDI interface bridges VP↔RTL coherency traffic
+   |
+   |     3.7h ENABLE VP EXECUTION
+   |       penable -all  (Enables all Simics VP cores)
+   |
+   |     3.7i DISABLE CORE CONTROL FOR CBB1-3
+   |       cbb1_ufi_hybrid_comp_0->disable_core_control = TRUE
+   |       cbb2_ufi_hybrid_comp_0->disable_core_control = TRUE
+   |       cbb3_ufi_hybrid_comp_0->disable_core_control = TRUE
+   |
+   |-- 3.8 PERFORMANCE TUNING
+   |     oakstream_rio.console.con->refresh_in_virtual_time = 1
+   |
+   |-- 3.9 POSTCODE MONITORS (script-branches)
+   |     if check_postcode5: waits for backport postcode "0x0005", exits
+   |     if check_link_train: waits for "Link train complete", exits
+   |
+   |-- 3.10 PPR FILES
+   |     → input_dir/simics_scripts/hsle/ppr_files/link_train_bp.simics  (if PCIe/CXL)
+   |     → input_dir/simics_scripts/hsle/ppr_files/multicore_sai_callback_bb_wa.simics
+   |     → input_dir/simics_scripts/hsle/ppr_files/ppr_wa.simics
+   |     → input_dir/simics_scripts/hsle/ppr_files/hybrid_checker.simics
+   |     → input_dir/simics_scripts/hsle/ppr_files/blaze_barrier.simics (checkpoint support)
+   |
+   +-- RETURNS to sle.simics (continues with steps 1.31+)
+
+
+===============================================================================
+STAGE 4: CBB SLE.SIMICS — CBB DIE RESET FLOW (runs in parallel)
+===============================================================================
+Source: input_dir/cbb/testbench/spark/sle.simics
+Called from: sle.simics step 1.22 (script-branch "cbb_reset")
+
+  [cbb/testbench/spark/sle.simics]
+   |
+   |-- Manages CBB die-specific reset sequencing
+   |-- Sets up CBB Python library paths (py_lib, hsle_reduced_cores)
+   |-- Runs CBB init scripts
+   |-- Handles CBB reset phase coordination with IMH dies
+   |-- This runs CONCURRENTLY with the main sle.simics flow
+   |
+   +-- (Continues running until CBB reset complete)
+
+
+===============================================================================
+STAGE 5: RTL RESET PHASES (Runtime — after emulation starts)
+===============================================================================
+Tracked by: input_dir/simics_scripts/reset_phase_marker_2imh.simics
+Forces by:  input_dir/simics_scripts/dmr_imh_forces.simics
+
+  [Emulation Running on ZeBu Hardware]
+   |
+   |-- 5.1 RESET PHASE 1 (S3M/IBL boot)
+   |     "Start of RESET_PHASE_1 for socket 0"
+   |     S3M firmware boots (bootstrap → runtime)
+   |     IBL (IBL = Initial Boot Loader on ARC cores) executes
+   |     Fuse offload, CPLD operations
+   |
+   |-- 5.2 RESET PHASE 2 (Infrastructure init)
+   |     PUnit primecode loads and starts executing
+   |     Basic infrastructure initialization
+   |     "End of RESET_PHASE_2 for socket 0"
+   |
+   |-- 5.3 RESET PHASE 3 — INFRA
+   |     Infrastructure configuration
+   |     "HWRS - RESET_PHASE_3_INFRA is complete for socket 0 !!" (imh8, imh9)
+   |     "End of RESET_PHASE_3_INFRA and start of RESET_PHASE_3_D2D"
+   |
+   |-- 5.4 RESET PHASE 3 — D2D
+   |     Die-to-Die link training (UCIe between IMH↔CBB)
+   |     "HWRS - RESET_PHASE_3_D2D is complete for socket 0 !!" (both IMH dies)
+   |     "End of RESET_PHASE_3_D2D and start of RESET_PHASE_3_INFRA_CFG"
+   |
+   |-- 5.5 RESET PHASE 3 — INFRA_CFG
+   |     Infrastructure configuration phase
+   |     "HWRS - RESET_PHASE_3_INFRA_CFG is complete for socket 0 !!"
+   |     "End of RESET_PHASE_3_INFRA_CFG and start of RESET_PHASE_4"
+   |
+   |-- 5.6 RESET PHASE 4
+   |     Memory controller init, DDR training
+   |     "End of RESET_PHASE_4 and start of RESET_PHASE_5"
+   |
+   |-- 5.7 RESET PHASE 5
+   |     Late initialization, coherency setup
+   |     "End of RESET_PHASE_5 for socket 0"
+   |
+   |-- 5.8 RESET PHASE 6 (Core release)
+   |     "Start of RESET_PHASE_6 for socket 0"
+   |     RTL core reaches reset vector (c2urequnnnh_address == 0xFFFFFFE0)
+   |     *** TRIGGERS hsle.simics step 3.7c — HYBRID SWITCH ***
+   |
+   +-- After hybrid switch: VP cores take over execution
+
+
+===============================================================================
+STAGE 6: BIOS BOOT (VP execution with RTL uncore)
+===============================================================================
+Driven by: Simics VP x86 ISS executing BIOS from IFWI flash image
+
+  [Hybrid Execution: VP cores + RTL uncore on ZeBu]
+   |
+   |-- 6.1 SEC PHASE (Security)
+   |     ACM validation, initial processor setup
+   |     VP cores fetch from reset vector via IDI hybrid mux
+   |     IDI transactions bridged to RTL coherency fabric
+   |
+   |-- 6.2 PEI PHASE (Pre-EFI Initialization)
+   |     Memory reference code (MRC) training flows
+   |     (Controlled by mrc_mem_flows bitmask set in vp.simics)
+   |     DDR memory map initialization
+   |
+   |-- 6.3 DXE PHASE (Driver Execution Environment)
+   |     UEFI drivers load
+   |     PCIe enumeration (via RTL HIOP)
+   |     Console output via UART (captured to test/uart.log)
+   |
+   |-- 6.4 BDS PHASE (Boot Device Selection)
+   |     Selects boot device (NVMe with SVOS image)
+   |
+   +-- BIOS completes, hands off to OS bootloader
+
+
+===============================================================================
+STAGE 7: SVOS BOOT
+===============================================================================
+Driven by: VP cores executing Linux kernel from NVMe disk image
+
+  [SVOS Boot Sequence]
+   |
+   |-- 7.1 GRUB BOOTLOADER
+   |     Displays SVOS boot menu (multiple kernel options)
+   |     Auto-selects: SVOS-NEXT_6.18.0_svos-next-tickless_presi
+   |     "Loading SVOS-NEXT 6.18.0 svos-next-tickless presi ..."
+   |
+   |-- 7.2 LINUX KERNEL BOOT
+   |     "Linux version 6.18.0.svos-next-tickless-x86-64"
+   |     Kernel initializes, detects hardware via RTL uncore
+   |
+   |-- 7.3 SVOS USERSPACE
+   |     SVOS init scripts run
+   |     System services start
+   |
+   |-- 7.4 POST-BOOT MONITORING
+   |     test/svos_post.simics: "Waiting for --- finish 85_cleanup_logs"
+   |     test/PPR_auto_exit_svos.simics: waits for "PPR_TEST_DONE"
+   |
+   +-- Run continues until test end or cycle limit
+
+
+===============================================================================
+STAGE 8: TEST TERMINATION
+===============================================================================
+
+  [Test End Detection]
+   |
+   |-- 8.1 ACED EXIT (normal pass)
+   |     CBB test_end_checker detects "Self check EBX = ACED"
+   |     Writes TEST_END file with exit code 0
+   |     sle.simics ACED monitor detects it
+   |     Writes "ACED" to test/results.log
+   |
+   |-- 8.2 CYCLE LIMIT
+   |     If cycles reach cmd_line_opt->cycles
+   |     Writes "HANG" to test/results.log
+   |
+   |-- 8.3 EXIT HANDLER
+   |     → input_dir/simics_scripts/end_of_run.simics
+   |     Collects tracker dumps, logs, etc.
+   |
+   +-- Simulation exits
+
+
+===============================================================================
+FILE DEPENDENCY SUMMARY (Execution Order)
+===============================================================================
+
+LEVEL 0 (Bootstrap):
+  SPARK framework bootstrap
+
+LEVEL 1 (Main entry):
+  └── input_dir/sle.simics
+
+LEVEL 2 (Called by sle.simics, before emulation start):
+  ├── input_dir/simics_scripts/hsle/vp.simics          ← VP platform setup
+  │   ├── input_dir/simics_scripts/hsle/fmod/imhpunit.simics
+  │   ├── input_dir/simics_scripts/hsle/fmod/cbbpunit.simics
+  │   ├── input_dir/simics_scripts/hsle/fmod/s3m.simics
+  │   └── input_dir/simics_scripts/hsle/preset/preset.yml
+  ├── input_dir/python/simics_HierarchyPaths.py
+  ├── input_dir/python/determine_model.py
+  ├── input_dir/python/emu_util.py
+  ├── input_dir/python/emu_configdb.py
+  ├── input_dir/python/resolve_pcode_directory.py
+  ├── input_dir/python/resolve_cbb_pcode_directory.py
+  ├── input_dir/python/resolve_cbb_acode_directory.py
+  ├── input_dir/python/tracers.py
+  ├── input_dir/python/fwc.py
+  ├── input_dir/python/fuse_load_2imh.py               ← Fuse loading (imh8+imh9)
+  ├── input_dir/python/primecode.py                     ← PCode loading
+  ├── input_dir/python/mem_load.py                      ← S3M mem loading
+  ├── input_dir/python/cpld_load.py                     ← CPLD loading
+  ├── input_dir/simics_scripts/create_clock_objects.simics
+  ├── input_dir/simics_scripts/auto_xtorgroups.simics   (called multiple times)
+  ├── input_dir/simics_scripts/single_step_detection.simics
+  ├── input_dir/simics_scripts/i3c_xtor.simics
+  ├── input_dir/simics_scripts/gpio_xtor.simics
+  ├── input_dir/simics_scripts/imh9_simics_scripts/gpio_xtor.simics
+  ├── input_dir/simics_scripts/pythonSv/iosf_sb_xtor.simics
+  ├── input_dir/simics_scripts/bios_fetchor_control.simics
+  ├── input_dir/simics_scripts/dmr_imh_forces.simics
+  ├── input_dir/simics_scripts/reset_phase_marker_2imh.simics
+  ├── input_dir/simics_scripts/dmr_2imh_only_forces.simics
+  ├── input_dir/simics_scripts/non-DCM0-IceCode.simics
+  ├── input_dir/simics_scripts/rca_signal_monitor.simics
+  ├── input_dir/simics_scripts/pega_xtor.simics
+  ├── input_dir/simics_scripts/svid_vr_en.simics
+  ├── input_dir/simics_scripts/d2d_iosf_pmsb_xtor.simics
+  ├── input_dir/simics_scripts/imh9_simics_scripts/d2d_iosf_imh9_pmsb_xtor.simics
+  ├── input_dir/simics_scripts/spi_xtor.simics
+  ├── input_dir/simics_scripts/espi_xtor.simics
+  ├── input_dir/simics_scripts/dfi_xtor.simics
+  ├── input_dir/simics_scripts/tpm_xtor.simics
+  ├── input_dir/simics_scripts/pm_hlm.simics
+  ├── input_dir/simics_scripts/primecode_monitors.simics
+  ├── input_dir/simics_scripts/lt.simics
+  ├── input_dir/simics_scripts/simics_post_setup_scripts/pll_en.simics
+  ├── input_dir/simics_scripts/reduce_log_levels_phase6.simics
+  └── input_dir/simics_scripts/end_of_run.simics        (on exit)
+
+LEVEL 2 (UCIe Ignite — fullstack D2D connections):
+  ├── input_dir/simics_scripts/hsle/ucie_ignite/uxi_fullstack_ucie.simics
+  ├── input_dir/simics_scripts/hsle/ucie_ignite/uxi_fullstack_ucie_cbb1.simics
+  ├── input_dir/simics_scripts/hsle/ucie_ignite/uxi_fullstack_ucie_cbb2.simics
+  ├── input_dir/simics_scripts/hsle/ucie_ignite/uxi_fullstack_ucie_cbb3.simics
+  └── input_dir/simics_scripts/hsle/ucie_ignite/ucie_ignite_connection_4cbb_ici.simics
+
+LEVEL 2 (HSLE core setup):
+  └── input_dir/simics_scripts/hsle/hsle.simics
+      ├── input_dir/simics_scripts/hsle/idi_xtor/idi_setup.simics
+      ├── input_dir/simics_scripts/hsle/core_pma/core_pma.simics (optional)
+      ├── input_dir/simics_scripts/hsle/umm/address_translator.simics (optional)
+      ├── input_dir/simics_scripts/hsle/ppr_files/link_train_bp.simics
+      ├── input_dir/simics_scripts/hsle/ppr_files/multicore_sai_callback_bb_wa.simics
+      ├── input_dir/simics_scripts/hsle/ppr_files/ppr_wa.simics
+      ├── input_dir/simics_scripts/hsle/ppr_files/hybrid_checker.simics
+      └── input_dir/simics_scripts/hsle/ppr_files/blaze_barrier.simics
+
+LEVEL 2 (CBB reset — parallel branch):
+  └── input_dir/cbb/testbench/spark/sle.simics
+
+LEVEL 2 (Post-setup — after emulation running):
+  ├── test/svos_post.simics
+  └── test/PPR_auto_exit_svos.simics
+
+
+===============================================================================
+KEY RUNTIME TIMELINE (from reference run testbench.log)
+===============================================================================
+
+  Wall Clock      Emu Cycle       Event
+  ----------      ---------       -----
+  13:27:18        0               RTI: Pre Cycle 0, Hit cycle_0
+  13:27:51        0               RTI: Pre Mount (connecting to ZeBu)
+  13:30:14        0               RTI: Mounted (ZeBu connected)
+  13:30:32        0               sle.simics main setup continues
+  13:30:45        0               Fuse loading (imh8+imh9)
+  13:30:46        0               Primecode loading
+  13:30:47        0               S3M mem loading starts
+  13:31:02        0               S3M/CPLD loading complete
+  13:33:14        0               hsle.simics: S3M FW_BYPASS set, VP disabled
+  13:33:14        0               hsle.simics: Waiting for RTL Core Reset
+  13:33:35        1               RTI: Hit cycle_1 (emulation running)
+  13:35:09        ~10             Post-setup scripts run (svos_post, PPR_auto_exit)
+  13:35:43        210             RESET_PHASE_1 starts
+  13:35:48        100,000         RTI: Hit cycle_100k
+  13:43:56        419,063,527     End of RESET_PHASE_2
+  13:48:03        606,198,717     RESET_PHASE_3_INFRA complete (imh9)
+  13:48:04        606,215,997     RESET_PHASE_3_INFRA complete (imh8), D2D starts
+  13:48:13        607,730,117     RESET_PHASE_3_D2D complete (both IMH)
+  13:48:13        607,815,997     RESET_PHASE_3_INFRA_CFG starts
+  13:48:46        624,842,557     RESET_PHASE_3_INFRA_CFG complete (phase 3 done)
+  13:48:46        624,963,197     RESET_PHASE_4 starts
+  13:51:11        652,374,067     End RESET_PHASE_4, RESET_PHASE_5 starts
+  13:56:33        875,163,897     End RESET_PHASE_5
+  13:56:34        875,163,897     RESET_PHASE_6 starts (core release)
+  13:56:35        875,663,293     UCLK ungating, Waiting for IDI flush
+  13:56:42        880,663,293     Hybrid Core(s) enabled, IDI Mux enabled
+                                  *** VP CORES NOW EXECUTING ***
+  ~14:00-14:33    ...             BIOS boot (SEC→PEI→DXE→BDS)
+  14:33:12        ~40.7B          SVOS GRUB menu displayed
+  14:33:35        ~40.7B          Linux kernel starts booting
+  14:33:35+       ...             SVOS userspace initializing
+
+
+===============================================================================
+KEY CONCEPTS
+===============================================================================
+
+1. HSLE (Hybrid System Level Emulation):
+   Combines Simics VP (fast x86 ISS for cores) with RTL emulation (ZeBu for
+   uncore: fabric, memory controllers, PCIe, D2D links). The "hybrid switch"
+   at RESET_PHASE_6 transitions from pure-RTL core execution to VP core
+   execution while keeping RTL uncore. IDI transactors bridge the interface.
+
+2. FMOD (Functional Model Override):
+   Replaces RTL firmware (S3M, PUnit) with Simics functional models for faster
+   boot. S3M fmod bypasses authentication; PUnit fmod replaces RTL PUnit.
+
+3. UCIe Ignite (Fullstack):
+   Uses UCIe ignite transactors to connect IMH IO dies to CBB compute dies
+   across die-to-die links. "Fullstack" means real RTL UCIe PHY+link is used
+   (vs. "litestack" BFM).
+
+4. IDI Hybrid Mux:
+   Hardware bridge between Simics VP x86 cores and RTL CBB die coherency
+   interface. Maps VP memory/IO transactions to RTL IDI protocol.
+   Credits: C2U_req=12, C2U_rsp=8, C2U_data=8.
+
+5. Reset Phases:
+   Phase 1: S3M/IBL boot
+   Phase 2: Early infrastructure
+   Phase 3-INFRA: Infrastructure init
+   Phase 3-D2D: Die-to-die link training
+   Phase 3-INFRA_CFG: Infrastructure config
+   Phase 4: Memory init/training
+   Phase 5: Late init, coherency
+   Phase 6: Core release → Hybrid switch → BIOS
+
+================================================================================
+END OF FLOW DOCUMENT
+================================================================================
