@@ -41,6 +41,28 @@ This file defines **9 stages** (STAGE 0–8) of the HSLE execution, milestone ma
 stage, and the expected chronological order. **Read this file at the start of every debug
 session** to have the full reference before running any greps.
 
+
+For Stage 6 (BIOS boot) sub-phase analysis, additionally read:
+```
+.github/skills/hsle-run-debugger/bios_flow.txt
+```
+
+This file documents **7 BIOS sub-stages** (6.0--6.6) with serconsole + debug_port POST code
+milestones for each:
+
+| Sub-stage | Phase | Key marker |
+|-----------|-------|-----------|
+| 6.0 | SEC | debug_port 0x0001--0x007f (no serconsole) |
+| 6.1 | Early PEI pre-memory | `EarlyPlatformPchInit`, `BIOS ID:` |
+| 6.2 | FSP-M / MRC (DDR5 training) | `START_MRC_RUN`, `PeiInstallPeiMemory` |
+| 6.3 | Post-memory PEI | `CEDT ACPI Table`, `DXE IPL Entry` |
+| 6.4 | DXE phase | `Loading DXE CORE`, `NvmExpressDriverBindingStart` |
+| 6.5 | BDS / boot device selection | `[Bds]Booting`, `Valid efi partition table` |
+| 6.6 | ExitBootServices -> OS handoff | `Decompressing Linux`, `Linux version` |
+
+**Read `bios_flow.txt` whenever Stage 6 is the failing stage**, before drilling down, to
+pinpoint the exact sub-phase where BIOS stopped.
+
 ---
 
 ## Procedure
@@ -163,17 +185,70 @@ markers** appear. The first stage with missing markers is the failure point.
 - Phase 5 hang → Late coherency setup failure; check UPI/fabric init
 
 #### STAGE 6: BIOS Boot
-| Marker | Grep pattern | Indicates |
-|--------|-------------|-----------|
-| BIOS PEI | `serconsole.con.*PeiServicesInstallPeiMemory` | PEI memory installed |
-| DXE entry | `serconsole.con.*DXE IPL Entry` | DXE phase started |
-| ExitBootServices | `ExitBootServicesEntry` or `ExitBootServices` | BIOS→OS handoff |
 
-**Common Stage 6 failures**:
-- No serconsole output after IDI Mux enabled → BIOS fetch failure; check `bios_fetchor_control`
-- Stuck in PEI → Memory Reference Code (MRC) hang; check `mrc_mem_flows` bitmask
-- Stuck in DXE → Driver loading issue; check PCIe enumeration, CXL DXE
-- Never reaches ExitBootServices → BIOS hang in BDS; check NVMe/boot device
+> **Reference**: `bios_flow.txt` defines 7 sub-stages (6.0--6.6) with full serconsole +
+> debug_port POST code milestones. **Read it now** to compare the checklist below against the
+> log. Use the combined milestone grep in Step 4 to locate the exact sub-stage boundary.
+
+Run the Stage 6 sub-phase milestone grep first:
+```bash
+grep -n "IDI Mux enabled\|EarlyPlatformPchInit\|BIOS ID:\|SiliconPolicyUpdatePreMem.*End.*Pre-Memory\|START_MRC_RUN\|Initialize clocks for all MemSs\|JEDEC_DATA\|IpMcMemInitComplete\|PeiInstallPeiMemory\|CEDT ACPI Table\|DXE IPL Entry\|Loading DXE CORE\|NvmExpressDriverBindingStart\|OnReadyToBoot\|PROGRESS CODE: V03051001\|\[Bds\]Booting\|Valid efi partition table\|Booting in blind mode\|IioSecureOnExitBootServices\|ExitBootServiceSmmCallback\|Decompressing Linux\|Linux version" "$TBLOG"
+```
+
+Also check debug_port POST code progress (shows SEC and MRC sub-phases not visible in serconsole):
+```bash
+grep "debug_port.bank.backport" "$TBLOG" | head -120
+```
+
+**Sub-phase checklist** (all markers must appear for a healthy Stage 6):
+
+| Sub-stage | Marker | Grep pattern | Indicates |
+|-----------|--------|-------------|----------| 
+| **6.0 SEC** | Hybrid switch done | `IDI Mux enabled` | VP cores start fetching BIOS |
+| 6.0 SEC | SEC alive | debug_port `0x0001` | SEC ROM execution started |
+| 6.0 SEC | SEC complete | debug_port `0x007f` | SEC->PEI handoff imminent |
+| **6.1 Early PEI** | UART online | `EarlyPlatformPchInit` | First serconsole output |
+| 6.1 Early PEI | BIOS ID verified | `BIOS ID: OKSDCRB1` | Correct IFWI loaded |
+| 6.1 Early PEI | Pre-mem done | `SiliconPolicyUpdatePreMem.*End.*Pre-Memory` | FSP-M entry approaching |
+| **6.2 MRC** | MRC start | `START_MRC_RUN` | FSP-M / MRC entered |
+| 6.2 MRC | DDR clocks | `Initialize clocks for all MemSs` | Clock init running |
+| 6.2 MRC | DIMM detect | `JEDEC_DATA` (x16) | All 16 DIMMs detected |
+| 6.2 MRC | MRC bypass | `IpMcMemInitComplete.*bypassed` | fmod MRC bypass confirmed |
+| 6.2 MRC | Memory installed | `PeiInstallPeiMemory` | MRC done; stack on DRAM |
+| **6.3 Post-Mem PEI** | CXL ACPI | `CEDT ACPI Table In CXL PEI` | CXL init passed |
+| 6.3 Post-Mem PEI | DXE ready | `DXE IPL Entry` | PEI->DXE handoff |
+| **6.4 DXE** | DXE loaded | `Loading DXE CORE at` | DXE Core running |
+| 6.4 DXE | NVMe enumerated | `NvmExpressDriverBindingStart` | NVMe storage found |
+| 6.4 DXE | ReadyToBoot | `OnReadyToBoot` | DXE drivers done |
+| 6.4 DXE | RTB code | `PROGRESS CODE: V03051001` | EFI_SW_DXE_BS_PC_READY_TO_BOOT |
+| **6.5 BDS** | BDS boot | `[Bds]Booting UEFI 1` | Boot device selection |
+| 6.5 BDS | NVMe GPT | `Valid efi partition table header` | NVMe partitions readable |
+| 6.5 BDS | Blind mode | `Booting in blind mode` | OS loader starting |
+| **6.6 ExitBootServices** | IIO lock | `IioSecureOnExitBootServices` | IIO security locked |
+| 6.6 ExitBootServices | ExitBoot SMM | `ExitBootServiceSmmCallback` | SMM ExitBoot called |
+| 6.6 ExitBootServices | Linux decompress | `Decompressing Linux` | Kernel image decompressing |
+| 6.6 ExitBootServices | Stage 7 start | `Linux version` | OS boot begins |
+
+**Common Stage 6 failures by sub-stage** (see `bios_flow.txt` for full details):
+- **6.0**: `IDI Mux enabled` but no debug_port `0x0001` -> BIOS fetch failure; check `bios_fetchor_control`
+- **6.0**: debug_port `0x0001` present but hangs before `0x007f` -> SEC stuck (LLC/CAR/ACM issue)
+- **6.1**: No serconsole after `0x007f` -> BIOS fetch failure or UART init hang
+- **6.1**: `BIOS ID` mismatch -> Wrong IFWI image loaded
+- **6.2**: `START_MRC_RUN` present but no `JEDEC_DATA` -> DIMM detection failure (DDR5 SPD error)
+- **6.2**: `IpMcMemInitComplete` absent -> MC channel never responded (IMH reset incomplete)
+- **6.2**: No `PeiInstallPeiMemory` -> MRC fatal; check EWL entries with bios-issue-analyzer
+- **6.3**: `DXE IPL Entry` absent -> Post-memory PEI dispatcher hung; check CxlInitPei
+- **6.4**: `NvmExpressDriverBindingStart` absent -> NVMe not enumerated (PCIe issue)
+- **6.4**: `PROGRESS CODE: V03051001` absent -> Hang before ReadyToBoot (DXE driver stall)
+- **6.5**: `Valid efi partition table` absent -> NVMe not accessible or wrong disk image
+- **6.6**: `Decompressing Linux` absent after `Booting in blind mode` -> Kernel image corrupt
+- **6.6**: `Linux version` absent after `Decompressing Linux` -> Early kernel crash
+
+> **When Stage 6 is the failing stage**: After completing the Stage checklist and drill-down
+> (Steps 3--4), load **`#skill:bios-issue-analyzer`** to perform deep BIOS error analysis.
+> The bios-issue-analyzer will decode EWL / IPSD / RC Fatal errors, BIOS assertions, and
+> POST code hangs from the `serconsole.con>` output in `testbench.log`, then produce a
+> **BIOS Issue Analysis Summary** to include in the final HSLE Run Debug Summary.
 
 #### STAGE 7: OS Boot
 | Marker | Grep pattern | Indicates |
@@ -191,6 +266,11 @@ markers** appear. The first stage with missing markers is the failure point.
 - **Kernel panic** → Check for `Kernel panic` in serconsole output
 - **GRUB selects wrong entry** → Wrong kernel may not support this platform
 - **Never reaches GRUB** → ExitBootServices failed or BIOS did not find boot device
+
+> **When Stage 7 fails before GRUB** (ExitBootServices reached but no GRUB/kernel output):
+> Load **`#skill:bios-issue-analyzer`** to check for BIOS-side errors (late DXE failures,
+> boot device enumeration errors) in the serconsole output between ExitBootServices and the
+> hang point.
 
 #### STAGE 8: Test Termination
 | Marker | Grep pattern | Indicates |
@@ -229,6 +309,28 @@ grep "serconsole.con>" "$TBLOG" | tail -20
 grep -i "error\|panic\|assert\|fatal" "$TBLOG" | grep "serconsole" | tail -20
 ```
 
+#### For Stage 6 BIOS sub-phase drill-down (use after sub-phase checklist above):
+```bash
+# Get all Stage 6 sub-phase milestones with line numbers (serconsole stream)
+grep -n "EarlyPlatformPchInit\|BIOS ID:\|START_MRC_RUN\|PeiInstallPeiMemory\|DXE IPL Entry\|Loading DXE CORE\|NvmExpressDriverBindingStart\|OnReadyToBoot\|\[Bds\]Booting\|IioSecureOnExitBootServices\|Decompressing Linux\|Linux version" "$TBLOG"
+
+# Get full debug_port POST code timeline (SEC + MRC progress visible here)
+grep "debug_port.bank.backport" "$TBLOG" | head -120
+
+# Decode last POST code -> BIOS sub-phase at hang:
+#   0x0001-0x007f  -> 6.0 SEC    0x00a0-0x00af  -> 6.1 Early PEI
+#   0x00e0-0x00ef  -> 6.2 FSP-M/MRC entry   0x007e -> 6.2 MRC separator
+#   0x00b0-0x00df  -> 6.2 MRC training   0x0051 -> 6.3 Post-mem PEI
+#   0x0052-0x0056  -> 6.4 DXE   0x0090 -> 6.4 SMM   0x0057 -> 6.5 BDS
+#   0x0058         -> 6.6 ExitBootServices entered
+
+# MRC-specific: verify JEDEC_DATA count (expect 16 for 16-DIMM config)
+grep "JEDEC_DATA" "$TBLOG" | wc -l
+
+# MRC-specific: check IpMcMemInitComplete appeared and was bypassed (fmod run)
+grep "IpMcMemInitComplete" "$TBLOG"
+```
+
 #### For reset phase failures (Stage 5):
 ```bash
 # Show all reset phase markers with line numbers
@@ -264,7 +366,23 @@ Match findings against this catalog of known failure signatures:
 | "Waiting for RTL Core Reset" with no UCLK message following | 3/5 | RTL never reached reset vector — reset phase hang | Check which reset phase stalled (Step 3 Stage 5 checklist) |
 | Only one IMH die reports `RESET_PHASE_3_INFRA` | 5 | One IMH die stalled during infrastructure init | Check IMH forces, fuse loading for the stalled die |
 | `RESET_PHASE_3_D2D` never completes | 5 | UCIe die-to-die link training failure | Check UCIe ignite scripts, D2D PHY init |
-| No serconsole output after "IDI Mux enabled" | 6 | BIOS fetch failure — VP core not fetching from IFWI | Check `bios_fetchor_control`, BIOS image path, hybrid mapping |
+| No serconsole output after "IDI Mux enabled" | 6.0 | BIOS fetch failure -- VP core not fetching from IFWI | Check `bios_fetchor_control`, BIOS image path, hybrid mapping |
+| debug_port `0x0001` absent after "IDI Mux enabled" | 6.0 | BIOS instruction fetch never started | Check `bios_fetchor_control` and BIOS flash mapping |
+| debug_port stuck between `0x0001` and `0x007f` | 6.0 | SEC phase hang -- LLC/CAR or ACM stall | Check LLC config, ACM image, CAR init |
+| No serconsole after debug_port `0x007f` | 6.1 | PEI Core failed to start after SEC | Check IFWI integrity; re-flash with correct image |
+| `BIOS ID` mismatch in serconsole | 6.1 | Wrong IFWI image loaded | Check `bios_image` / `ifwi1.bin` path in `vp.simics` |
+| `START_MRC_RUN` present but `JEDEC_DATA` absent | 6.2 | DIMM detection failure -- DDR5 SPD error | Check DFI xtors, DIMM config in SPD file |
+| `JEDEC_DATA` count < 16 | 6.2 | Not all DIMMs detected | Verify 16-DIMM config in `vp.simics` SPD |
+| `IpMcMemInitComplete` absent | 6.2 | MC channel never responded | IMH reset incomplete; check Reset Phase 4 |
+| `IpMcMemInitComplete` NOT `bypassed` in fmod run | 6.2 | fmod not applied correctly | Verify `cbbpunit_imhpunit_s3m_fmod=True` |
+| `START_MRC_RUN` present but no `PeiInstallPeiMemory` | 6.2 | MRC fatal | Decode EWL entries with `bios-issue-analyzer` |
+| `DXE IPL Entry` absent after `PeiInstallPeiMemory` | 6.3 | Post-memory PEI hung | Check CxlInitPei.efi, CpuMpPei.efi |
+| `NvmExpressDriverBindingStart` absent | 6.4 | NVMe not enumerated -- PCIe issue | Check PCIe config, HIOP xtor |
+| `PROGRESS CODE: V03051001` absent | 6.4 | Hang before ReadyToBoot | Check last DXE driver; look for ASSERT_EFI_ERROR |
+| `[Bds]Booting` absent after `OnReadyToBoot` | 6.5 | BDS boot failed | Check NVMe image path |
+| `Valid efi partition table header` absent | 6.5 | NVMe GPT unreadable | Verify `disk_image` path in `vp.simics` |
+| `Decompressing Linux` absent after `Booting in blind mode` | 6.6 | Kernel image corrupt | Check OS image integrity |
+| `Linux version` absent after `Decompressing Linux` | 6.6 | Early kernel crash | Check kernel image compatibility |
 | `Traceback` or `Exception` before "Mounted" | 1 | Python script error during setup | Read the full traceback; usually a missing file or bad config |
 | `reached cycle limit: N` with no results.log | 8 | Bootstrap timeout — run did not finish in time | Identify last stage reached (Step 3), debug that stage |
 | `StreamPCIe instance ... is not configured` (many repeated) | 5–6 | PCIe xtors not configured | Check `pcie_en` flag; ignore if PCIe is not under test |
@@ -298,6 +416,7 @@ Stage Progress:
 
 Last Activity:
   Last console output : line <N> @ <wall clock timestamp>
+  Last debug_port PC  : 0x<XX> -> <sub-phase name from bios_flow.txt>
   Emu cycle at last   : <cycle>
   Timeout at          : <cycle> (<wall clock>)
   Silence gap         : <N minutes>
@@ -321,7 +440,9 @@ When diagnosing, compare key parameters against the known-good reference run (SV
 | bootstrap_timeout | 9,000,000,000 cycles | `grep "bootstrap_timeout" testbench.log` |
 | DIMM count | 16 DIMMs (8 per IMH die) | Check `vp.simics` DDR config section in log |
 | Fmod flags | `cbbpunit_imhpunit_s3m_fmod=True` | `grep "fmod" testbench.log` |
-| BIOS version | Check IFWI path | `grep -i "bios\|ifwi" testbench.log \| head -10` |
+| BIOS version | `OKSDCRB1.86B.0032.D77.2602232255` | `grep "BIOS ID:" testbench.log` |
+| Stage 6 JEDEC count | 16 | `grep "JEDEC_DATA" testbench.log | wc -l` |
+| Stage 6 MRC bypass | `IpMcMemInitComplete.*bypassed` (imh2.0 + imh2.1) | `grep "IpMcMemInitComplete" testbench.log` |
 
 ---
 
@@ -343,7 +464,14 @@ For quick stage timing comparison:
 | ~T+22m | ~624M | RESET_PHASE_3_INFRA_CFG complete |
 | ~T+24m | ~652M | End RESET_PHASE_4 |
 | ~T+30m | ~875M | End RESET_PHASE_5 → RESET_PHASE_6 → Hybrid switch |
-| ~T+33m+ | ... | BIOS boot (SEC→PEI→DXE→BDS), ~30–60 min total |
+| ~T+30m | ~875M | Stage 6.0: IDI Mux enabled, debug_port 0x0001 (SEC start) |
+| ~T+31m | ... | Stage 6.0: debug_port 0x007f (SEC complete, ~27 sec wall time) |
+| ~T+31m | ... | Stage 6.1: EarlyPlatformPchInit (UART online) |
+| ~T+32m | ... | Stage 6.2: START_MRC_RUN -> PeiInstallPeiMemory (~12 min MRC) |
+| ~T+44m | ... | Stage 6.3: DXE IPL Entry |
+| ~T+52m | ... | Stage 6.4: DXE Core loaded, NVMe enumerated, ReadyToBoot |
+| ~T+61m | ... | Stage 6.5: [Bds]Booting, NVMe GPT parsed |
+| ~T+63m | ... | Stage 6.6: ExitBootServices, Decompressing Linux |
 | ~T+66m | ~40.7B | SVOS GRUB menu |
 | ~T+67m | ~40.7B | Linux kernel starts |
 

@@ -1,0 +1,86 @@
+{
+  "0x80000002": {
+    "description": "Device Error - Device communication or initialization failed"
+  },
+  "0x80000003": {
+    "description": "Device Not Ready"
+  },
+  "0x80000004": {
+    "description": "Device Write Protected"
+  },
+  "0x80000005": {
+    "description": "Out of Resources"
+  },
+  "0x80000006": {
+    "description": "Volume Corrupted"
+  },
+  "0x80000007": {
+    "description": "Volume Full"
+  },
+  "0x8000000A": {
+    "description": "No Media"
+  },
+  "0x8000000B": {
+    "description": "Media Changed"
+  },
+  "0x8000000C": {
+    "description": "Not Found"
+  },
+  "0x8000000D": {
+    "description": "Access Denied"
+  },
+  "0x8000000E": {
+    "description": "No Response"
+  },
+  "0x8000000F": {
+    "description": "No Mapping"
+  },
+  "0x80000010": {
+    "description": "Timeout"
+  },
+  "0x80000011": {
+    "description": "Not Started"
+  },
+  "0x80000012": {
+    "description": "Already Started"
+  },
+  "0x80000013": {
+    "description": "Aborted"
+  },
+  "0x80000014": {
+    "description": "ICMP Error"
+  },
+  "0x80000015": {
+    "description": "TFTP Error"
+  },
+  "0x80000016": {
+    "description": "Protocol Error"
+  },
+  "0x80000017": {
+    "description": "Incompatible Version"
+  },
+  "0x80000018": {
+    "description": "Security Violation"
+  },
+  "0x80000019": {
+    "description": "CRC Error"
+  },
+  "0x8000001A": {
+    "description": "End of Media"
+  },
+  "0x8000001F": {
+    "description": "End of File"
+  },
+  "0x80000020": {
+    "description": "Invalid Language"
+  },
+  "0x80000021": {
+    "description": "Compromised Data"
+  },
+  "0x80000022": {
+    "description": "IP Address Conflict"
+  },
+  "0x80000023": {
+    "description": "HTTP Error"
+  }
+}

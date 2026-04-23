@@ -1,0 +1,484 @@
+{
+  "metadata": {
+    "description": "BIOS and ACPI debug codes written to port 0x80",
+    "note": "POST codes are BIOS firmware checkpoints. ACPI codes are OS/runtime debug output."
+  },
+  "post_codes": {
+    "0x01": {
+      "code": "0x01",
+      "code_int": 1,
+      "macro": "POWER_ON_POST_CODE",
+      "description": "Enter flat 32-bit (Big Real) mode"
+    },
+    "0x02": {
+      "code": "0x02",
+      "code_int": 2,
+      "macro": "MICROCODE_POST_CODE",
+      "description": "Local Microcode (Not used in GNR Emulation)"
+    },
+    "0x03": {
+      "code": "0x03",
+      "code_int": 3,
+      "macro": "NEM_CACHE_INIT_POST_CODE",
+      "description": "Enable NEM mode after completion of EarlyUncoreInit()"
+    },
+    "0x04": {
+      "code": "0x04",
+      "code_int": 4,
+      "macro": "NEM_CACHE_ENABLED_POST_CODE",
+      "description": "Cache Enabled after completion of NemInit()"
+    },
+    "0x05": {
+      "code": "0x05",
+      "code_int": 5,
+      "macro": "SBSP_PBSP_BRANCH_POST_CODE",
+      "description": "BSP Selection / MMCFG register programmed"
+    },
+    "0x07": {
+      "code": "0x07",
+      "code_int": 7,
+      "macro": "MINOR_ERR_SW_CHECK_07",
+      "description": ""
+    },
+    "0x08": {
+      "code": "0x08",
+      "code_int": 8,
+      "macro": "MINOR_ERR_SW_CHECK_08",
+      "description": ""
+    },
+    "0x09": {
+      "code": "0x09",
+      "code_int": 9,
+      "macro": "MINOR_ERR_SW_CHECK_09",
+      "description": ""
+    },
+    "0x0A": {
+      "code": "0x0A",
+      "code_int": 10,
+      "macro": "MINOR_ERR_SW_CHECK_0A",
+      "description": ""
+    },
+    "0x0B": {
+      "code": "0x0B",
+      "code_int": 11,
+      "macro": "MINOR_ERR_SW_CHECK_0B",
+      "description": ""
+    },
+    "0x0C": {
+      "code": "0x0C",
+      "code_int": 12,
+      "macro": "MINOR_ERR_SW_CHECK_0C",
+      "description": ""
+    },
+    "0x0D": {
+      "code": "0x0D",
+      "code_int": 13,
+      "macro": "MINOR_ERR_SW_CHECK_0D",
+      "description": ""
+    },
+    "0x0E": {
+      "code": "0x0E",
+      "code_int": 14,
+      "macro": "MINOR_ERR_SW_CHECK_0E",
+      "description": ""
+    },
+    "0x0F": {
+      "code": "0x0F",
+      "code_int": 15,
+      "macro": "MINOR_ERR_SW_CHECK_0F",
+      "description": ""
+    },
+    "0x10": {
+      "code": "0x10",
+      "code_int": 16,
+      "macro": "MINOR_ERR_SW_CHECK_10",
+      "description": ""
+    },
+    "0x11": {
+      "code": "0x11",
+      "code_int": 17,
+      "macro": "SEC_CPU_INIT_END_POST_CODE",
+      "description": "End of SEC Phase / Entering PEI Phase"
+    },
+    "0x12": {
+      "code": "0x12",
+      "code_int": 18,
+      "macro": "MINOR_ERR_SW_CHECK_12",
+      "description": ""
+    },
+    "0x13": {
+      "code": "0x13",
+      "code_int": 19,
+      "macro": "COLD_BOOT_MRC_DONE_POST_CODE",
+      "description": "SBSP KTI/MRC returned on cold reset path"
+    },
+    "0x14": {
+      "code": "0x14",
+      "code_int": 20,
+      "macro": "WARM_BOOT_MRC_DONE_POST_CODE",
+      "description": "SBSP KTI/MRC returned on warm reset path"
+    },
+    "0x15": {
+      "code": "0x15",
+      "code_int": 21,
+      "macro": "MINOR_ERR_SW_CHECK_15",
+      "description": ""
+    },
+    "0x17": {
+      "code": "0x17",
+      "code_int": 23,
+      "macro": "SBSP_END_POST_CODE",
+      "description": "SBSP reached end of uBIOS"
+    },
+    "0xCA": {
+      "code": "0xCA",
+      "code_int": 202,
+      "macro": "NON_INTEL_CPU_ERROR_CODE",
+      "description": "Non-Intel Processor found"
+    },
+    "0xCB": {
+      "code": "0xCB",
+      "code_int": 203,
+      "macro": "VCU_COMMAND_TIMEOUT_ERROR_CODE",
+      "description": "VCU Command Timeout"
+    },
+    "0xCC": {
+      "code": "0xCC",
+      "code_int": 204,
+      "macro": "ILLEGAL_SOCKET_ID_ERROR_CODE",
+      "description": "Illegal Socket ID"
+    },
+    "0xCD": {
+      "code": "0xCD",
+      "code_int": 205,
+      "macro": "MCU_LOAD_ERROR_CODE",
+      "description": "Microcode Load Failure"
+    },
+    "0xCE": {
+      "code": "0xCE",
+      "code_int": 206,
+      "macro": "MMCFG_NOT_YET_ENABLED_ERROR_CODE",
+      "description": "MMCFG Enable Failure"
+    },
+    "0xD0": {
+      "code": "0xD0",
+      "code_int": 208,
+      "macro": "NEM_NO_FREE_MTRR_ERROR_CODE",
+      "description": "NEM Failed No Unused MTRR"
+    },
+    "0xD1": {
+      "code": "0xD1",
+      "code_int": 209,
+      "macro": "NEM_DATA_RW_TEST_ERROR_CODE",
+      "description": "NEM Failed Cache RW Test Failed"
+    },
+    "0xD8": {
+      "code": "0xD8",
+      "code_int": 216,
+      "macro": "ERR_BOOT_MODE",
+      "description": "Error - Invalid Boot Mode"
+    },
+    "0xD9": {
+      "code": "0xD9",
+      "code_int": 217,
+      "macro": "ERR_MINIMUM_PATH_SETUP",
+      "description": "Error - Minimum Path Setup"
+    },
+    "0xDA": {
+      "code": "0xDA",
+      "code_int": 218,
+      "macro": "ERR_TOPOLOGY_DISCOVERY",
+      "description": "Error - Topology Discovery"
+    },
+    "0xDB": {
+      "code": "0xDB",
+      "code_int": 219,
+      "macro": "ERR_SAD_SETUP",
+      "description": "Error - SAD Setup"
+    },
+    "0xDC": {
+      "code": "0xDC",
+      "code_int": 220,
+      "macro": "ERR_UNSUPPORTED_TOPOLOGY",
+      "description": "Error - Unsupported Topology"
+    },
+    "0xF0": {
+      "code": "0xF0",
+      "code_int": 240,
+      "macro": "POST_MAJOR_CPUSV_PEI_HIF_ENTRY",
+      "description": "PEI CpuSv, Entry Point to CpuSv Pei module"
+    },
+    "0xF1": {
+      "code": "0xF1",
+      "code_int": 241,
+      "macro": "POST_MAJOR_SVBIOS_SVBOOT_ENTRY",
+      "description": "DXE SvBios Boot Entry"
+    },
+    "0xF2": {
+      "code": "0xF2",
+      "code_int": 242,
+      "macro": "POST_MAJOR_CPUSV_LOCATE_HI",
+      "description": "DXE CpuSv Locate SV Card Protocol"
+    },
+    "0xFF": {
+      "code": "0xFF",
+      "code_int": 255,
+      "macro": "POST_MAJOR_CPUSV_HI_DEV_NOT_FOUND",
+      "description": "DXE CpuSv Host Interface device not found"
+    }
+  },
+  "acpi_debug_codes": {
+    "0x21": {
+      "code": "0x21",
+      "code_int": 33,
+      "macro": "NBSP_BUS_CFG_DONE_POST_CODE",
+      "description": "NBSP has switched to new MMCFG/BUSNO configuration",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x22": {
+      "code": "0x22",
+      "code_int": 34,
+      "macro": "NBSP_PARK_POST_CODE",
+      "description": "NBSP is parked, waiting on PIPE command from SBSP",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x23": {
+      "code": "0x23",
+      "code_int": 35,
+      "macro": "MINOR_ERR_SW_CHECK_23",
+      "description": "SCI GPE 23 - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x24": {
+      "code": "0x24",
+      "code_int": 36,
+      "macro": "MINOR_ERR_SW_CHECK_24",
+      "description": "SCI GPE 24 - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x26": {
+      "code": "0x26",
+      "code_int": 38,
+      "macro": "MINOR_ERR_SW_CHECK_26",
+      "description": "SCI GPE 26 - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x27": {
+      "code": "0x27",
+      "code_int": 39,
+      "macro": "NBSP_SBSP_END_POST_CODE",
+      "description": "NBSP has torn down NEM CAR and reached end of execution",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x28": {
+      "code": "0x28",
+      "code_int": 40,
+      "macro": "MINOR_ERR_SW_CHECK_28",
+      "description": "SCI GPE 28 - EC or Platform Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x29": {
+      "code": "0x29",
+      "code_int": 41,
+      "macro": "MINOR_ERR_SW_CHECK_29",
+      "description": "SCI GPE 29 - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x2A": {
+      "code": "0x2A",
+      "code_int": 42,
+      "macro": "MINOR_ERR_SW_CHECK_2A",
+      "description": "SCI GPE 2A - General Purpose Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x2B": {
+      "code": "0x2B",
+      "code_int": 43,
+      "macro": "MINOR_ERR_SW_CHECK_2B",
+      "description": "SCI GPE 2B - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x2C": {
+      "code": "0x2C",
+      "code_int": 44,
+      "macro": "MINOR_ERR_SW_CHECK_2C",
+      "description": "SCI GPE 2C - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x2D": {
+      "code": "0x2D",
+      "code_int": 45,
+      "macro": "MINOR_ERR_SW_CHECK_2D",
+      "description": "SCI GPE 2D - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x2E": {
+      "code": "0x2E",
+      "code_int": 46,
+      "macro": "MINOR_ERR_SW_CHECK_2E",
+      "description": "SCI GPE 2E - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x2F": {
+      "code": "0x2F",
+      "code_int": 47,
+      "macro": "MINOR_ERR_SW_CHECK_2F",
+      "description": "SCI GPE 2F - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x30": {
+      "code": "0x30",
+      "code_int": 48,
+      "macro": "MINOR_ERR_SW_CHECK_30",
+      "description": "SCI GPE 30 - Power Management Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x31": {
+      "code": "0x31",
+      "code_int": 49,
+      "macro": "MINOR_ERR_SW_CHECK_31",
+      "description": "SCI GPE 31 - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x32": {
+      "code": "0x32",
+      "code_int": 50,
+      "macro": "MINOR_ERR_SW_CHECK_32",
+      "description": "SCI GPE 32 - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x33": {
+      "code": "0x33",
+      "code_int": 51,
+      "macro": "MINOR_ERR_SW_CHECK_33",
+      "description": "SCI GPE 33 - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x34": {
+      "code": "0x34",
+      "code_int": 52,
+      "macro": "MINOR_ERR_SW_CHECK_34",
+      "description": "SCI GPE 34 - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x35": {
+      "code": "0x35",
+      "code_int": 53,
+      "macro": "MINOR_ERR_SW_CHECK_35",
+      "description": "SCI GPE 35 - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x36": {
+      "code": "0x36",
+      "code_int": 54,
+      "macro": "MINOR_ERR_SW_CHECK_36",
+      "description": "SCI GPE 36 - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x37": {
+      "code": "0x37",
+      "code_int": 55,
+      "macro": "MINOR_ERR_SW_CHECK_37",
+      "description": "SCI GPE 37 - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x38": {
+      "code": "0x38",
+      "code_int": 56,
+      "macro": "MINOR_ERR_SW_CHECK_38",
+      "description": "SCI GPE 38 - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x39": {
+      "code": "0x39",
+      "code_int": 57,
+      "macro": "MINOR_ERR_SW_CHECK_39",
+      "description": "SCI GPE 39 - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x3A": {
+      "code": "0x3A",
+      "code_int": 58,
+      "macro": "MINOR_ERR_SW_CHECK_3A",
+      "description": "SCI GPE 3A - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x3B": {
+      "code": "0x3B",
+      "code_int": 59,
+      "macro": "MINOR_ERR_SW_CHECK_3B",
+      "description": "SCI GPE 3B - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x3C": {
+      "code": "0x3C",
+      "code_int": 60,
+      "macro": "MINOR_ERR_SW_CHECK_3C",
+      "description": "SCI GPE 3C - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x3D": {
+      "code": "0x3D",
+      "code_int": 61,
+      "macro": "MINOR_ERR_SW_CHECK_3D",
+      "description": "SCI GPE 3D - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x3E": {
+      "code": "0x3E",
+      "code_int": 62,
+      "macro": "MINOR_ERR_SW_CHECK_3E",
+      "description": "SCI GPE 3E - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x3F": {
+      "code": "0x3F",
+      "code_int": 63,
+      "macro": "MINOR_ERR_SW_CHECK_3F",
+      "description": "SCI GPE 3F - Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x4A": {
+      "code": "0x4A",
+      "code_int": 74,
+      "macro": "MINOR_ERR_SW_CHECK_4A",
+      "description": "ACPI Hotplug Event Handler",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x72": {
+      "code": "0x72",
+      "code_int": 114,
+      "macro": "MINOR_ERR_SW_CHECK_72",
+      "description": "ACPI Sleep State (_PTS - Prepare To Sleep)",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x73": {
+      "code": "0x73",
+      "code_int": 115,
+      "macro": "MINOR_ERR_SW_CHECK_73",
+      "description": "ACPI Wake State (_WAK - Wake After Sleep)",
+      "source": "ACPI DSL + Documentation"
+    },
+    "0x84": {
+      "code": "0x84",
+      "code_int": 132,
+      "macro": "ACPI_OS_EVENT",
+      "description": "OS Interrupt/Debug Event",
+      "source": "ACPI DSL"
+    },
+    "0xE3": {
+      "code": "0xE3",
+      "code_int": 227,
+      "macro": "ACPI_PCIE_HOTPLUG",
+      "description": "PCIe Native Hotplug Control",
+      "source": "ACPI DSL"
+    },
+    "0xEE": {
+      "code": "0xEE",
+      "code_int": 238,
+      "macro": "ACPI_DEBUG_STATUS",
+      "description": "ACPI Debug/Error Status",
+      "source": "ACPI DSL"
+    }
+  }
+}
