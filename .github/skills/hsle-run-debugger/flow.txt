@@ -528,9 +528,11 @@ Driven by: Simics VP x86 ISS executing BIOS from IFWI flash image
 
 
 ===============================================================================
-STAGE 7: SVOS BOOT
+STAGE 7: OS BOOT (SVOS or CentOS)
 ===============================================================================
 Driven by: VP cores executing Linux kernel from NVMe disk image
+
+  --- VARIANT A: SVOS Boot ---
 
   [SVOS Boot Sequence]
    |
@@ -544,37 +546,98 @@ Driven by: VP cores executing Linux kernel from NVMe disk image
    |     Kernel initializes, detects hardware via RTL uncore
    |
    |-- 7.3 SVOS USERSPACE
-   |     SVOS init scripts run
-   |     System services start
+   |     SVOS execflow init scripts run:
+   |       15_early_setup → diamondrapidsearlysetup
+   |       45_loginshell  → (10s pause for user intervention)
+   |       50_mount       → diamondrapidspremountWA, diamondrapids_svdefs loaded
+   |       diamondrapidssetupenv → GRUB env configured
+   |     Login prompt: "root@sut:/>"
    |
-   |-- 7.4 POST-BOOT MONITORING
-   |     test/svos_post.simics: "Waiting for --- finish 85_cleanup_logs"
+   |-- 7.4 POST-BOOT PPR TEST
+   |     test/svos_post.simics: monitors GRUB menu and SVOS timings
    |     test/PPR_auto_exit_svos.simics: waits for "PPR_TEST_DONE"
+   |     PPR framework runs diagnostics (cpuinfo, dmidecode, lsmod, etc.)
+   |     On completion: "[PPR] Got root@sut" → "PPR_TEST_DONE" (emu.devices log)
+   |     Auto exit triggers: "Auto exit script: exiting from auto exit script"
    |
-   +-- Run continues until test end or cycle limit
+   +-- Run ends via auto exit (normal) or cycle limit (timeout)
+
+  --- VARIANT B: CentOS Boot ---
+
+  [CentOS Boot Sequence]
+   |
+   |-- 7.1 GRUB BOOTLOADER
+   |     CentOS GRUB menu displayed
+   |     Auto-selects default kernel entry
+   |
+   |-- 7.2 LINUX KERNEL BOOT
+   |     "Linux version 6.18.0-dmr.bkc.6.18.4.1.4.x86_64"
+   |     Kernel initializes, systemd starts services
+   |
+   |-- 7.3 CENTOS USERSPACE
+   |     systemd services start (systemd-logind, etc.)
+   |     Login prompt: "dmr-bkc login: root"
+   |
+   |-- 7.4 POST-BOOT PPR TEST
+   |     test/centos_post.simics: monitors CentOS timings
+   |     test/PPR_auto_exit_centos.simics: waits for "PPR_TEST_DONE"
+   |     PPR framework runs diagnostics (lspci, cpuinfo, meminfo, etc.)
+   |     On completion: "[PPR] Got root@dmr-bkc" → "PPR_TEST_DONE" (emu.devices log)
+   |     Auto exit triggers: "Auto exit script: exiting from auto exit script"
+   |
+   +-- Run ends via auto exit (normal) or cycle limit (timeout)
+
+  --- OS TYPE DETECTION ---
+  To determine which OS variant:
+    grep "simics_post_setup_script" testbench.log
+    - "test/svos_post.simics"   → SVOS run
+    - "test/centos_post.simics" → CentOS run
 
 
 ===============================================================================
 STAGE 8: TEST TERMINATION
 ===============================================================================
 
-  [Test End Detection]
+  [Test End Detection — TWO PASS PATHS]
    |
-   |-- 8.1 ACED EXIT (normal pass)
+   |-- 8.1 ACED EXIT (Path A — bare-metal / non-OS tests)
    |     CBB test_end_checker detects "Self check EBX = ACED"
    |     Writes TEST_END file with exit code 0
    |     sle.simics ACED monitor detects it
    |     Writes "ACED" to test/results.log
+   |     Result: PASS (results.log contains "ACED")
    |
-   |-- 8.2 CYCLE LIMIT
-   |     If cycles reach cmd_line_opt->cycles
+   |-- 8.2 PPR AUTO-EXIT (Path B — SVOS / CentOS OS boot tests)
+   |     PPR framework completes diagnostics after OS login
+   |     "[PPR] Got root@<hostname>" logged to emu.devices
+   |     "PPR_TEST_DONE" emitted to emu.devices log (NOT serconsole)
+   |     PPR_auto_exit_svos.simics or PPR_auto_exit_centos.simics detects it
+   |     "Auto exit script: exiting from auto exit script" logged
+   |     end_of_run.simics runs, reports test_result: -1 (this is NORMAL)
+   |     NO results.log is created (this is NORMAL for Path B)
+   |     Result: PASS (PPR_TEST_DONE present in testbench.log)
+   |
+   |     *** KEY: test_result: -1 and missing results.log are EXPECTED for Path B ***
+   |     *** The ONLY pass indicator for Path B is PPR_TEST_DONE in the log ***
+   |
+   |-- 8.3 CYCLE LIMIT (timeout)
+   |     If cycles reach cmd_line_opt->cycles (bootstrap_timeout)
    |     Writes "HANG" to test/results.log
+   |     Result: HANG
    |
-   |-- 8.3 EXIT HANDLER
+   |-- 8.4 EXIT HANDLER
    |     → input_dir/simics_scripts/end_of_run.simics
-   |     Collects tracker dumps, logs, etc.
+   |     Collects MCA dumps, MIO reads, tracker dumps, etc.
+   |     Reports: test_result, rca_check_found, machine_check_found
    |
    +-- Simulation exits
+
+  KEY GREP for Stage 8 pass detection:
+    grep "PPR_TEST_DONE" testbench.log           <- Path B pass
+    grep "Self check EBX = ACED" testbench.log   <- Path A pass
+    grep "Auto exit script" testbench.log         <- Path B exit trigger
+    grep "reached cycle limit" testbench.log      <- Timeout / HANG
+    cat test/results.log                          <- Path A result file
 
 
 ===============================================================================

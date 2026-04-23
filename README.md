@@ -13,6 +13,7 @@ Given an HSLE run directory path, the agent:
 - For Stage 6 (BIOS boot) failures: pinpoints the exact BIOS sub-phase (6.0 SEC through 6.6 ExitBootServices) using both serconsole output and debug_port POST code stream
 - Decodes BIOS error codes (EWL, IPSD, RC Fatal, assertions, POST codes) automatically when Stage 6/7 fails
 - Matches failure signatures against a known-issue catalog
+- Detects passing SVOS/CentOS PPR test runs via `PPR_TEST_DONE` in the emu.devices stream (these runs have no `results.log` and `test_result: -1` by design -- both are normal for PPR_PASS)
 - Produces a structured **HSLE Run Debug Summary** with root cause and recommendations
 
 ## Requirements
@@ -56,7 +57,7 @@ HSLE Run Debug Summary
 Run Path    : /nfs/.../crt/40584/mcp_ici_hsle_centos.0
 Test Name   : mcp_ici_hsle_centos
 OS Image    : CentOS 6.18.0-dmr.bkc
-Result      : TIMEOUT (no results.log)
+Result      : HANG
 
 Stage Progress:
   Stage 0 (Bootstrap)         : PASS
@@ -78,6 +79,33 @@ Failure Signature : mem=\r\n (empty mem= in kernel cmdline)
 Root Cause        : Kernel command line ends with "mem=" and no value.
 Recommendations   : Set mem=2G in GRUB kernel args, or reduce DIMM count in vp.simics
 ```
+
+### Passing SVOS/CentOS PPR test run:
+```
+HSLE Run Debug Summary
+======================
+Run Path    : /nfs/.../26ww12_2/mcp_ici_hsle_svos_fmod.0
+Test Name   : mcp_ici_hsle_svos_fmod
+OS Image    : SVOS Linux 6.18.0.svos-next-tickless-x86-64
+Result      : PPR_PASS
+
+Stage Progress:
+  Stage 0 (Bootstrap)         : PASS
+  Stage 1 (sle.simics setup)  : PASS
+  Stage 2 (VP platform)       : PASS
+  Stage 3 (HSLE core setup)   : PASS
+  Stage 4 (CBB reset)         : PASS
+  Stage 5 (Reset phases)      : PASS (all 6 phases completed)
+  Stage 6 (BIOS boot)         : PASS (ExitBootServices reached)
+  Stage 7 (OS boot)           : PASS (root@sut:/> login; [PPR] Got root@sut)
+  Stage 8 (Test termination)  : PASS (Path B -- PPR auto-exit)
+
+PPR Pass Evidence:
+  PPR_TEST_DONE  : line 618,976 @ 14:47:50 cycle 3,422,911,782 (emu.devices stream)
+  Auto exit      : line 623,191 @ 14:48:29 (PPR_auto_exit_svos.simics)
+  test_result -1 : NORMAL for PPR runs (no results.log expected)
+```
+
 
 ### Stage 6 (BIOS / MRC) failure:
 ```

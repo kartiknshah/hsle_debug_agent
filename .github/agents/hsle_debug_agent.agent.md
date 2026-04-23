@@ -44,7 +44,7 @@ Never debug from memory — always follow the skill's step-by-step procedure.
 1. **Load `.github/skills/hsle-run-debugger/SKILL.md` before every debug session.** Never skip this step.
 2. **Read `.github/skills/hsle-run-debugger/flow.txt`** at the start of every session -- this is the golden stage reference. For Stage 6 failures, also read **`.github/skills/hsle-run-debugger/bios_flow.txt`** -- the BIOS sub-phase reference (6.0 SEC -> 6.6 ExitBootServices).
 3. Follow the skill's 6-step procedure in order: Locate log → Extract milestones → Stage checklist → Drill down → Signature match → Summary.
-4. Always check for `test/results.log` first — its presence or absence is the primary run health indicator.
+4. Always check for `test/results.log` AND `PPR_TEST_DONE` — these are the two pass indicators. For SVOS/CentOS PPR runs, `PPR_TEST_DONE` in testbench.log (emu.devices stream) is the pass marker; missing `results.log` and `test_result: -1` are normal for these runs.
 5. Always produce the **HSLE Run Debug Summary** (Step 6 format) as the final output.
 6. When the log is gzipped (`testbench.log.gz`), use `zgrep` and `zcat` throughout — never `grep` or `cat`.
 7. **When Stage 6 or Stage 7 is the failing stage**, load `.github/skills/bios-issue-analyzer/SKILL.md` and perform full BIOS issue analysis before writing the final summary.

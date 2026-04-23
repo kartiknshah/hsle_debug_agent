@@ -77,8 +77,13 @@ ls <run_dir>/testbench.log*
 wc -l <run_dir>/testbench.log
 # or for gzipped: zcat <run_dir>/testbench.log.gz | wc -l
 
-# Check for results.log — indicates run reached an exit handler
-cat <run_dir>/test/results.log 2>/dev/null || echo "NO results.log — run likely timed out or crashed"
+# Check for results.log — indicates run reached an ACED/DEAD/SHUTDOWN exit handler
+cat <run_dir>/test/results.log 2>/dev/null || echo "NO results.log"
+
+# Check for PPR_TEST_DONE — the pass marker for SVOS/CentOS PPR test runs
+# PPR_TEST_DONE appears in the emu.devices log stream (NOT serconsole)
+grep "PPR_TEST_DONE" <run_dir>/testbench.log | head -1
+# or for gzipped: zgrep "PPR_TEST_DONE" <run_dir>/testbench.log.gz | head -1
 ```
 
 If testbench.log is gzipped, use `zgrep` and `zcat` instead of `grep` and `cat` in all
@@ -89,6 +94,12 @@ subsequent steps.
 - 10K–300K lines → failed during ZeBu connect or pre-emulation (Stage 1)
 - 300K–350K lines → failed during reset phases (Stage 5)
 - 350K–650K lines → failed during BIOS/OS boot (Stage 6–7)
+- 650K–700K lines → likely reached OS boot + PPR test execution (check PPR_TEST_DONE)
+
+> **IMPORTANT**: Missing `results.log` does NOT always mean failure. For SVOS and CentOS
+> PPR test runs, the pass condition is `PPR_TEST_DONE` appearing in the `emu.devices` log
+> stream of `testbench.log`, followed by the "Auto exit script" trigger. These runs
+> typically have `test_result: -1` and no `results.log` even when they PASS.
 
 ---
 
@@ -99,7 +110,7 @@ Run the master milestone grep. This single command captures markers for all 9 st
 ```bash
 TBLOG="<run_dir>/testbench.log"
 
-grep -n "RTI:\|RESET_PHASE\|hsle.simics\|IDI Mux\|Hybrid Core\|UCLK\|Waiting for RTL\|FW_BYPASS\|pdisable\|penable\|fuse_load\|primecode\.py\|mem_load\|Mounted\|Pre Mount\|sle.simics.*Project\|sle.simics.*determine_model\|sle.simics.*Running\|ACED\|DEAD\|HANG\|SHUTDOWN\|bootstrap_timeout\|reached cycle limit\|end_of_run\|Linux version\|Kernel command line\|ExitBootServices\|serconsole.*GRUB\|centos_post\|svos_post\|PPR_auto_exit\|Error\|ERROR\|FATAL\|Exception\|Traceback\|quit.*Simics" "$TBLOG" | head -120
+grep -n "RTI:\|RESET_PHASE\|hsle.simics\|IDI Mux\|Hybrid Core\|UCLK\|Waiting for RTL\|FW_BYPASS\|pdisable\|penable\|fuse_load\|primecode\.py\|mem_load\|Mounted\|Pre Mount\|sle.simics.*Project\|sle.simics.*determine_model\|sle.simics.*Running\|ACED\|DEAD\|HANG\|SHUTDOWN\|bootstrap_timeout\|reached cycle limit\|end_of_run\|Linux version\|Kernel command line\|ExitBootServices\|serconsole.*GRUB\|centos_post\|svos_post\|PPR_auto_exit\|PPR_TEST_DONE\|Auto exit script\|Error\|ERROR\|FATAL\|Exception\|Traceback\|quit.*Simics" "$TBLOG" | head -120
 ```
 
 ---
@@ -257,8 +268,12 @@ grep "debug_port.bank.backport" "$TBLOG" | head -120
 | Kernel start | `Linux version` | Linux kernel executing |
 | Kernel command line | `Command line:` | Check for broken parameters |
 | Zone ranges | `Zone ranges:` | Memory zones initializing |
-| Login prompt | `login:` or OS-specific marker | OS boot complete |
-| CentOS Timings / PPR_TEST_DONE | `CentOS Timings` or `PPR_TEST_DONE` | Test completion marker |
+| Login prompt (SVOS) | `root@sut:` | SVOS OS boot complete, shell reached |
+| Login prompt (CentOS) | `dmr-bkc login:` | CentOS login prompt reached |
+| PPR root detected | `[PPR] Got root@` (in emu.devices log) | PPR framework detected OS login |
+| PPR test done | `PPR_TEST_DONE` (in emu.devices log, NOT serconsole) | **PPR test PASS** |
+| Auto exit | `Auto exit script: exiting` | PPR auto-exit triggered after PPR_TEST_DONE |
+| CentOS Timings | `CentOS Timings` | CentOS-specific timing completion marker |
 
 **Common Stage 7 failures**:
 - **Kernel `mem=` truncated/empty** → Kernel command line ends with `mem=\r\n` (no value); causes hang during zone init. Fix: set `mem=2G` or remove `mem=`
@@ -273,12 +288,34 @@ grep "debug_port.bank.backport" "$TBLOG" | head -120
 > hang point.
 
 #### STAGE 8: Test Termination
+
+There are **two distinct pass paths** depending on the test type:
+
+**Path A — ACED exit (bare-metal / non-OS tests)**:
+The test writes `EBX = ACED`, which triggers `test_end_checker` → writes `results.log`.
+
+**Path B — PPR auto-exit (SVOS / CentOS OS boot tests)**:
+The OS boots, the PPR framework runs diagnostics, emits `PPR_TEST_DONE` to the
+`emu.devices` log (NOT serconsole), and then `PPR_auto_exit_svos.simics` or
+`PPR_auto_exit_centos.simics` triggers "Auto exit script: exiting". These runs
+typically have `test_result: -1` and **no `results.log`** — this is normal and expected.
+
 | Marker | Grep pattern | Indicates |
 |--------|-------------|-----------|
-| ACED | `Self check EBX = ACED` or `ACED` in results.log | **PASS** |
+| ACED | `Self check EBX = ACED` or `ACED` in results.log | **PASS** (Path A) |
+| PPR_TEST_DONE | `PPR_TEST_DONE` (in emu.devices log) | **PASS** (Path B — SVOS/CentOS PPR) |
+| Auto exit after PPR | `Auto exit script: exiting` after `PPR_TEST_DONE` | Confirms Path B pass |
 | HANG | `reached cycle limit` | Bootstrap timeout — test did not complete in time |
 | DEAD | `DEAD` in results.log | Fatal error detected |
 | SHUTDOWN | `SHUTDOWN` in results.log | Controlled shutdown |
+
+> **CRITICAL**: When checking Stage 8, always grep for `PPR_TEST_DONE` in the full
+> `testbench.log` (not just serconsole lines). It appears in the `emu.devices` info stream:
+> ```
+> [emu.devices info] {emu.engine 0x... <cycle>} [HH:MM:SS] PPR_TEST_DONE
+> ```
+> If `PPR_TEST_DONE` is present AND `Auto exit script: exiting` follows it, the run is a
+> **PASS** regardless of `test_result: -1` or missing `results.log`.
 
 ---
 
@@ -343,6 +380,24 @@ grep "RESET_PHASE_3_INFRA is complete" "$TBLOG"
 grep "D2D\|UCIe\|link train" "$TBLOG" | tail -20
 ```
 
+#### For OS boot PPR test completion check (Stage 7–8):
+```bash
+# Check for PPR_TEST_DONE (appears in emu.devices log, NOT in serconsole)
+grep -n "PPR_TEST_DONE" "$TBLOG"
+
+# Check for PPR auto-exit trigger
+grep -n "Auto exit script" "$TBLOG"
+
+# Check PPR framework root detection
+grep -n "\[PPR\] Got root@" "$TBLOG"
+
+# Verify the test type (SVOS vs CentOS) from post-setup scripts
+grep "simics_post_setup_script" "$TBLOG" | head -5
+
+# Check login prompt reached (SVOS: root@sut, CentOS: dmr-bkc login:)
+grep -n "root@sut\|dmr-bkc login:" "$TBLOG" | head -5
+```
+
 #### For setup failures (Stage 0–1):
 ```bash
 # Check for Python exceptions
@@ -388,6 +443,10 @@ Match findings against this catalog of known failure signatures:
 | `StreamPCIe instance ... is not configured` (many repeated) | 5–6 | PCIe xtors not configured | Check `pcie_en` flag; ignore if PCIe is not under test |
 | DXE hangs after CXL DXE entry | 6 | CXL driver hang during PCIe/CXL enumeration | Check CXL config, HIOP xtor status |
 | Kernel panic in serconsole | 7 | Linux kernel crash — driver or memory issue | Read panic message for specific cause |
+| `PPR_TEST_DONE` present + `Auto exit script: exiting` + no `results.log` | 8 | **PASS** — PPR test completed successfully (SVOS/CentOS) | This is the normal pass path for OS boot PPR runs. Report as PPR_PASS. |
+| `PPR_TEST_DONE` absent + `Auto exit script: exiting` + no `results.log` | 8 | PPR auto-exit fired before test completion | Check PPR_auto_exit timeout; verify PPR test scripts are present in OS image |
+| `dmr-bkc login:` present but no `PPR_TEST_DONE` | 7–8 | CentOS booted to login but PPR test did not run | Check PPR test scripts on the CentOS disk image |
+| `root@sut:` present but no `PPR_TEST_DONE` | 7–8 | SVOS booted to shell but PPR test did not run | Check PPR test scripts on the SVOS disk image |
 
 ---
 
@@ -401,7 +460,7 @@ HSLE Run Debug Summary
 Run Path    : <run_dir>
 Test Name   : <testname>
 OS Image    : <os_image from testbench.log>
-Result      : <ACED / HANG / DEAD / TIMEOUT / NO_RESULT>
+Result      : <ACED / PPR_PASS / HANG / DEAD / TIMEOUT / NO_RESULT>
 
 Stage Progress:
   Stage 0 (Bootstrap)         : PASS
