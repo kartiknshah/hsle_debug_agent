@@ -1,0 +1,509 @@
+================================================================================
+                   DMR MCP ICI HSLE -- BIOS BOOT FLOW (STAGE 6)
+                   ============================================
+  BIOS Build  : OKSDCRB1.86B.0032.D77.2602232255 (DEBUG, OakStreamRp platform)
+  BIOS Type   : UEFI / EDK2 -- SEC -> PEI -> DXE -> BDS -> OS Handoff
+  Platform    : MCP 1-Socket, 2 IMH dies (imh8+imh9), 4 CBB dies
+  Reference   : mcp_ici_hsle_svos_fmod.0 (26ww12_2)
+  Log section : testbench.log lines ~352002-613682  (~261K lines)
+  FMOD flag   : cbbpunit_imhpunit_s3m_fmod=True  -> MRC memory init bypassed
+
+  STAGE 6 TRIGGER : IDI Mux enabled (testbench.log line ~352002)
+  STAGE 6 END     : [    0.000000] Linux version (testbench.log line ~613682)
+
+--- TWO LOG STREAMS IN STAGE 6 ---
+  1. serconsole : BIOS UART console output (~130,144 lines in Stage 6)
+       Prefix  : <oakstream_rio.serconsole.con>
+       Content : Human-readable BIOS debug prints, driver load messages
+       Coverage: Available from early PEI onward; SILENT during SEC (6.0)
+
+  2. debug_port : BIOS port 0x80 POST code writes (~115 entries in Stage 6)
+       Prefix  : [oakstream_rio.debug_port.bank.backport info] {core[0][0] 0x<RIP> <cyc>} [HH:MM:SS] 0xXXXX
+       Content : 1-byte checkpoint codes written to I/O port 0x80 by BIOS/MRC
+       Coverage: Starts at VERY FIRST VP instruction (SEC, before UART init)
+                 SEC entries RIP in 0xFFEAxxxx; MRC entries RIP = 0xffbd42e1
+       Value   : Only source of progress info during SEC (6.0) and dense MRC.
+                 Decode using bios-post-code-decoder skill (DMR codes).
+================================================================================
+
+
+================================================================================
+STAGE 6.0 -- SEC PHASE (silent on serconsole -- debug_port only)
+================================================================================
+Driven by: VP x86 cores executing BIOS from reset vector 0xFFFFFFF0 via IDI Mux
+
+  [IDI Mux enabled -> VP cores start fetching BIOS]
+   |
+   |-- VP cores begin instruction fetch at reset vector 0xFFFFFFF0
+   |     (BIOS flash mapped via bios_fetchor_control.simics)
+   |
+   |-- SEC sets up Cache-As-RAM (CAR) in LLC for temporary stack
+   |     No UART/serial port initialized yet -- NO serconsole output
+   |     ~450 testbench.log lines with emulation stats (no serconsole)
+   |
+   |-- ACM/microcode validation
+   |
+   |   debug_port POST codes (RIP in 0xFFEAxxxx -- SEC ROM execution):
+   |     0x0001  <- Enter flat 32-bit mode -- first code after IDI Mux
+   |     0x0002  <- SEC step 2
+   |     0x0003  <- SEC step 3
+   |     0x0004  <- SEC step 4 (LLC/CAR setup -- ~14 sec wall time)
+   |     0x0005  <- SEC step 5 (~2.5 sec: CAR operational)
+   |     0x0006  <- SEC step 6 (final SEC checks)
+   |     0x007f  <- SEC complete -- handoff to PEI imminent
+   |
+   +-- HANDOFF -> PEI Pre-Memory
+         First serconsole line: EarlyPlatformPchInit() - Start  (~13:56:51)
+         (SEC window: ~27 sec wall time, 0x0001->0x007f entirely via debug_port)
+
+  KEY GREP to confirm SEC:
+
+  NOTE: If IDI Mux enabled appears but NO 0x0001 debug_port -- BIOS fetch failure.
+        If 0x0001 present but hangs before 0x007f -- SEC stuck (LLC/CAR/ACM).
+  KEY GREP to confirm SEC:
+    grep 'IDI Mux enabled' testbench.log
+    grep 'debug_port.bank.backport' testbench.log | head -7
+    grep 'EarlyPlatformPchInit' testbench.log
+
+  NOTE: If IDI Mux enabled appears but NO 0x0001 -- BIOS fetch failed.
+        If 0x0001 present but hangs before 0x007f -- SEC stuck (LLC/CAR/ACM).
+
+
+================================================================================
+STAGE 6.1 -- EARLY PEI PRE-MEMORY (before memory training)
+================================================================================
+Driven by: PEI Core, pre-memory PEIMs; all code runs in CAR (cache-only, no DRAM)
+
+  [First serconsole output]
+   |
+   |-- EarlyPlatformPchInit() - Start / End
+   |     PCH early hardware initialization (GPIO, LPC, SPI)
+   |
+   |-- Platform Type Value = 0x7  (OakStreamRp Simics platform)
+   |
+   |-- PEI BIOS ID verification:
+   |     PEI get BIOS ID from FV successfully
+   |     BIOS ID: OKSDCRB1.86B.0032.D77.2602232255
+   |
+   |-- Pre-memory PEIM loading (PROGRESS CODE brackets each):
+   |     PeiGenericIpmi.efi, McErrorReport.efi, SiliconPolicyPeiPreMem.efi
+   |
+   |-- IIO bifurcation (Simics defaults):
+   |     [IIO](UBA) IioUbaLoadSwGpioBifurcation: not supported on Simics  (expected)
+   |     [IIO](UBA) [0.PE0] Bif=0x1E | x1x1x1x1 (DEFAULT)
+   |
+   |-- Softstrap validation (all MioModeSel = 0x0 on Simics, expected):
+   |     [PLAT][STRAP] GetSoftstrapHob() Enter / Exit
+   |
+   |   debug_port POST codes (~13:57:44-13:58:07, RIP = 0xffbd42e1):
+   |     0x00a0  <- PEI Core entry
+   |     0x00a1  <- Pre-mem PEIM dispatch starts
+   |     0x00a9  <- SiliconPolicyPreMem init
+   |     0x00a3  <- IIO/UBA bifurcation programming
+   |     0x00ab  <- Softstrap/MioModeSel validation
+   |     0x00a8  <- Platform policy update in progress
+   |     0x00a4  <- SiliconPolicyPreMem end
+   |     0x00a9  <- FSP-M wrapper entry approaching
+   |
+   +-- SiliconPolicyUpdatePreMem Silicon PEI Policy Update End in Pre-Memory
+         -> Transition to FSP-M / MRC
+
+  KEY GREP patterns:
+    grep 'EarlyPlatformPchInit' testbench.log
+    grep 'BIOS ID:' testbench.log
+    grep 'SiliconPolicyUpdatePreMem.*End.*Pre-Memory' testbench.log
+    grep 'debug_port.bank.backport' testbench.log | grep '0x00a'
+
+  COMMON FAILURES at Stage 6.1:
+    - No serconsole after 0x007f debug_port -> BIOS fetch failure
+    - BIOS ID mismatch -> wrong IFWI image loaded
+    - 0x00a0 absent after 0x007f -> PEI Core failed to start
+
+
+================================================================================
+STAGE 6.2 -- FSP-M: MEMORY REFERENCE CODE (MRC / DDR5 Training)
+================================================================================
+Driven by: FspmWrapperPeim.efi -> Silicon MRC (inside FSP-M binary)
+Note: In fmod runs, full DDR training is BYPASSED -- only JEDEC/SPD init runs
+
+  [SiliconPolicyUpdatePreMem End -> FSP-M entry]
+   |
+   |-- START_MRC_RUN                         (debug_port: 0x00e0 at ~13:58:23)
+   |     MRC knobs: PROMOTE_MRC_WARN_EN 0
+   |     SetupChanged: MRC input parameters changed
+   |     Clearing the MRC NVRAM structures
+   |
+   |-- 6.2.1 Clock Initialization:        (debug_port: 0x00ec -> 0x00e0 -> 0x00e1)
+   |     CallTableEntry: Initialize clocks for all MemSs
+   |     N0: DMFC for DDR5 40  <- DDR5-4000 (40 x 100MHz)
+   |     [ScktId: 0] Initialize clocks for all MemSs - 110ms
+   |
+   |-- 6.2.2 DIMM Detection (SPD/JEDEC):    (debug_port: 0x00e1)
+   |     DDR5 RDIMM  R/C-A  (16 slots populated)
+   |     JEDEC_DATA: (x16 entries, one per DIMM slot)
+   |
+   |-- 6.2.3 MRC Training Flows:             (debug_port: 0x00e3-0x00e5, 0x00ac-0x00af)
+   |     CallTableEntry: Memory Initialization and CMI Start
+   |     IpMcMemInitComplete(): Warning: Memory Initialization bypassed
+   |       (both imh2.0 and imh2.1 -- EXPECTED for fmod)
+   |
+   |   debug_port MRC codes (RIP = 0xffbd42e1 throughout):
+   |
+   |   Phase 1 -- MRC Entry (~14:04:00-14:04:59):
+   |     0x00e0  <- MRC training start
+   |     0x00ec  <- Clock training
+   |     0x00e1  <- DIMM detect complete
+   |     0x00e4  <- MRC training flow A
+   |     0x00e3  <- MRC training flow B
+   |     0x00e5  <- MRC training flow C
+   |     0x00ac  <- MRC sub-phase (result/check)
+   |     0x00af, 0x00ad, 0x00af  <- MRC sub-phases
+   |
+   |   Phase 2 -- CMI / Algorithm Loop (~14:05:30-14:08:16):
+   |     0x00bf  <- CMI start / coherency fabric
+   |     0x00b5  <- CMI sub-step
+   |     0x007e  <- MRC separator (written between algorithm steps, ~20x)
+   |     0x00cf, 0x00de, 0x00cd  <- Rx/Tx training algorithms
+   |     0x00b0  <- memory controller sub-phase
+   |     0x00c1, 0x007b, 0x00dd  <- training algos / checkpoints
+   |     0x00b1, 0x00b4, 0x0078  <- MC sub-steps / checkpoints
+   |     0x00b2, 0x00c6, 0x00b3, 0x00d5  <- MC result + training
+   |     0x00b7, 0x00c7  <- MC sub-step + algorithm (b7 appears multiple times)
+   |     0x0079, 0x00be, 0x00d6, 0x00d2  <- checkpoints + DFI training
+   |     0x0075, 0x00cc, 0x00b8  <- checkpoint + RCD training + MC
+   |     0x0074, 0x00b9, 0x00d7  <- checkpoint + MC + Tx
+   |     0x00bb, 0x00b6, 0x00b7, 0x00ba  <- MC results/sub-steps
+   |     0x00d4  <- Tx training step (~14:07:54)
+   |     0x00cc, 0x00bc, 0x0076, 0x0077  <- RCD + MC result + checkpoints
+   |     0x00c2, 0x00c6, 0x00bf  <- Rx algo + training + CMI complete
+   |     0x00af  <- MRC training done
+   |
+   |-- 6.2.4 Post-MRC / Memory Map:        (debug_port: 0x00e6->0x00ee at ~14:10:12)
+   |     0x00e6  <- Memory map construction begins
+   |     0x00e9  <- HOB list building
+   |     0x00eb  <- Memory resource descriptor creation
+   |     0x00ed  <- PEI memory install
+   |     0x00ee  <- PEI/DXE handoff approaching
+   |     PeiInstallPeiMemory MemoryBegin 0x5A9D0000, MemoryLength 0x14000000
+   |
+   +-- PEI permanent memory installed -> stack switches from CAR to DRAM
+
+  KEY GREP patterns:
+    grep 'START_MRC_RUN' testbench.log
+    grep 'Initialize clocks for all MemSs' testbench.log
+    grep 'JEDEC_DATA' testbench.log | wc -l              <- expect 16
+    grep 'IpMcMemInitComplete' testbench.log | grep 'bypassed'
+    grep 'PeiInstallPeiMemory' testbench.log
+    grep 'debug_port.bank.backport' testbench.log | grep '0x00e'
+    grep 'debug_port.bank.backport' testbench.log | grep '0x007e'
+
+  COMMON FAILURES at Stage 6.2:
+    - 0x00e0 present but stuck -> FSP-M hang in MRC
+    - START_MRC_RUN but no JEDEC_DATA -> DIMM detection failure (DDR5 SPD error)
+    - IpMcMemInitComplete absent -> MC channel never responded (IMH reset incomplete)
+    - 0x007e never clears -> MRC algorithm stuck mid-training
+    - Missing PeiInstallPeiMemory / no 0x00e6 -> MRC fatal; check EWL entries
+    - MRC codes stop at 0x00a9 range -> FSP-M wrapper failed before MRC entry
+    - IpMcMemInitComplete NOT bypassed in fmod run -> fmod not applied correctly
+
+
+================================================================================
+STAGE 6.3 -- POST-MEMORY PEI (PEIM loading on DRAM; ACPI HOB construction)
+================================================================================
+Driven by: PEI Core dispatcher running post-memory PEIMs; HOB list built in DRAM
+
+  [PeiInstallPeiMemory -> stack switches to DRAM]
+   |
+   |-- Guided section decompression / FV loading into DRAM
+   |
+   |   debug_port POST codes (~14:16:21, RIP = 0xffbd42e1):
+   |     0x0051  <- Post-memory PEI / DXE IPL loading  (~14:16:21)
+   |
+   |-- ACPI table construction as HOBs:
+   |     CEDT, MRRM, SRAT, SLIT, HMAT, MCFG, RAS SSDT
+   |     [CXL] Update ACPI Table HOB SRAT/SLIT/HMAT successfully
+   |
+   |-- Post-memory PEIM loading:
+   |     PeiCore.efi, DxeIpl.efi, CxlInitPei.efi, MemSmbiosTable.efi
+   |     SiliconInitPostMem.efi (IIO, UPI, fabric post-memory init)
+   |     CpuMpPei.efi (AP bringup), CpuFeaturesPei.efi, RasPeiInit.efi
+   |
+   |-- HOB finalization:
+   |     HOB[0]: Type = EFI_HOB_TYPE_HANDOFF, Offset = 0x0, Length = 0x38
+   |     Memory TOLM: 7FFFFFFF
+   |     PCIE BASE: 0x100000000000  Size: 0x20000000
+   |
+   |-- End-of-PEI / SMM early lock:
+   |     [GPIOV2] [PPI] [EndofPeiCallback]: START / END
+   |     SmmCpuFeaturesCompleteSmmReadyToLock Done
+   |
+   +-- DXE IPL Entry   -> PEI->DXE handoff            (debug_port: 0x0051 confirms)
+
+  KEY GREP patterns:
+    grep 'CEDT ACPI Table In CXL PEI' testbench.log
+    grep 'HOB.*EFI_HOB_TYPE_HANDOFF' testbench.log
+    grep 'DXE IPL Entry' testbench.log
+    grep 'debug_port.bank.backport' testbench.log | grep '0x0051'
+
+  COMMON FAILURES at Stage 6.3:
+    - CxlInitPei.efi fails -> CXL link never trained; check UCIe ignite logs
+    - CpuMpPei.efi hangs -> AP bringup failure; CBB core IDI issue
+    - DXE IPL Entry never appears -> hung in post-memory PEI dispatcher
+    - 0x0051 debug_port absent -> post-mem PEI never started (MRC exit failure)
+
+
+================================================================================
+STAGE 6.4 -- DXE PHASE (Driver Execution Environment)
+================================================================================
+Driven by: DxeCore.efi + DXE dispatcher loading all DXE drivers
+
+  [DXE IPL Entry -> DXE Core loads]
+   |
+   |-- Loading DXE CORE at 0x00063271000 EntryPoint=0x00063273994
+   |     AddressBits=52, LevelOfPaging=4, 1GPage=1
+   |
+   |   debug_port POST codes (RIP = 0xffbd42e1):
+   |     0x0052  <- DXE Core loaded, dispatcher starting  (~14:24:07)
+   |     0x0053  <- DXE dispatcher running PEI-to-DXE HOBs  (~14:24:17)
+   |     0x0090  <- SMM infrastructure init  (~14:24:21)
+   |     0x0054  <- DXE drivers loading -- first wave  (~14:26:03)
+   |     0x0055  <- DXE drivers loading -- second wave  (~14:29:03)
+   |     0x0056  <- DXE late dispatch / ReadyToBoot prep  (~14:30:45)
+   |     0x0057  <- BDS entry / boot device selection  (~14:31:15)
+   |
+   |-- SMM Infrastructure (throughout DXE):
+   |     MmEntryNotifyProtocolCallback / MmExitNotifyProtocolCallback (repeating)
+   |
+   |-- NVMe Storage:
+   |     NvmExpressDriverBindingStart: start  (x2 -- two NVMe controllers)
+   |     NvmExpressDriverBindingStart: end successfully
+   |
+   |-- ReadyToBoot Event Chain:
+   |     [ACPI] AcpiOnReadyToBootCallback
+   |     OnReadyToBoot
+   |     System Post Complete GPIO / BMC GPIO has been set
+   |     PROGRESS CODE: V03051001 I0   <- EFI_SW_DXE_BS_PC_READY_TO_BOOT
+   |
+   +-- [Bds]Booting UEFI 1              (debug_port: 0x0057 at ~14:31:15)
+
+  KEY GREP patterns:
+    grep 'Loading DXE CORE' testbench.log
+    grep 'NvmExpressDriverBindingStart' testbench.log
+    grep 'OnReadyToBoot' testbench.log
+    grep 'PROGRESS CODE: V03051001' testbench.log
+    grep '\[Bds\]Booting' testbench.log
+    grep 'debug_port.bank.backport' testbench.log | grep '0x005'
+
+  COMMON FAILURES at Stage 6.4:
+    - NvmExpressDriverBindingStart absent -> NVMe not enumerated (PCIe issue)
+    - ASSERT_EFI_ERROR in DXE driver -> use bios-assertion-analysis skill
+    - PROGRESS CODE V03051001 absent -> hang before ReadyToBoot
+    - 0x0053 debug_port absent -> DXE Core failed to start dispatching
+    - 0x0055 present but run hangs -> late DXE driver deadlock
+
+
+================================================================================
+STAGE 6.5 -- BDS PHASE (Boot Device Selection -- boot attempt)
+================================================================================
+Driven by: UEFI BDS module; selects and starts SVOS boot image from NVMe
+
+  [[Bds]Booting UEFI 1]
+   |
+   |-- NVMe GPT partition table parsed:
+   |     BlockSize: 512,  LastBlock: 0x121614BC  (~293 GB NVMe disk)
+   |     Valid efi partition table header (primary and backup)
+   |     128 GPT entries: EFI System Partition (~570 MB) + Linux root (~2.3 TB)
+   |
+   |-- Booting in blind mode
+   |
+   |-- FPDT Boot Performance timestamps:
+   |     OsLoaderLoadImageStart  = 131353445904
+   |     OsLoaderStartImageStart = 131396208926
+   |     ExitBootServicesEntry   = 134615516519
+   |
+   |-- Booting the kernel (entry_offset: 0x0000000001a8d070)
+   |
+   |   debug_port POST codes:
+   |     0x0058  <- OS loader started / boot hand-off  (14:33:32)
+   |
+   +-- -> ExitBootServices sequence begins
+
+  KEY GREP patterns:
+    grep '\[Bds\]Booting' testbench.log
+    grep 'Valid efi partition table header' testbench.log
+    grep 'Booting in blind mode' testbench.log
+    grep 'FPDT: Boot Performance' testbench.log
+    grep 'Booting the kernel' testbench.log
+    grep 'debug_port.bank.backport' testbench.log | grep '0x0058'
+
+  COMMON FAILURES at Stage 6.5:
+    - Valid efi partition table absent -> NVMe not accessible / wrong image
+    - 0x0057 present but 0x0058 absent -> BDS boot attempt failed
+    - FPDT OsLoaderLoadImageStart present but ExitBootServicesEntry absent -> OS crash
+
+
+================================================================================
+STAGE 6.6 -- ExitBootServices and BIOS->OS HANDOFF
+================================================================================
+Driven by: UEFI ExitBootServices() called by Linux EFI stub
+
+  [Booting the kernel -> ExitBootServices]
+   |
+   |-- [IIO] IioSecureOnExitBootServices...  <- IIO security lockdown
+   |-- [IIO](CXL) IioCxl20DevicesLock()
+   |
+   |-- FPDT Final: FPDT: Boot Performance - ExitBootServicesEntry = 134615516519
+   |
+   |-- POST code: Checkpoint Code: Socket 0, 0x58, 0x00, 0x0000
+   |
+   |-- ACPI/SMM callbacks:
+   |     [ACPI] AcpiOnExitBootServicesCallback
+   |     ExitBootServiceSmmCallback () : Triggered.
+   |     PlatformSmmExitBootServicesCallback: Set mExitBootServices to TRUE.
+   |
+   |-- CPU runtime: CpuDxe: 5-Level Paging = 0 / MpInitChangeApLoopCallback() done!
+   |
+   |-- PROGRESS CODE: V03101019 I0  <- EFI_SW_DXE_BS_PC_EXIT_BOOT_SERVICES_END
+   |
+   |   debug_port POST codes:
+   |     0x0058  <- ExitBootServices entered         (14:33:32)
+   |     0x0000  <- OS clears/resets port 0x80       (14:33:46 -- after Linux starts)
+   |     0x0084  <- ACPI runtime callback from OS    (14:34:41 -- OS-side ACPI)
+   |     0x00ee  <- Additional ACPI/runtime code     (14:34:42)
+   |     NOTE: 0x0000, 0x0084, 0x00ee are written by OS/kernel, not BIOS
+   |
+   |-- Linux decompression (final serconsole BIOS output):
+   |     early console in extract_kernel
+   |     Decompressing Linux... Parsing ELF... done.
+   |     Booting the kernel (entry_offset: 0x0000000001a8d070).
+   |
+   +-- [    0.000000] Linux version 6.18.0.svos-next-tickless-x86-64
+         -> STAGE 6 complete -> STAGE 7 (SVOS Boot) begins
+
+  KEY GREP patterns:
+    grep 'IioSecureOnExitBootServices' testbench.log
+    grep 'FPDT: Boot Performance - ExitBootServicesEntry' testbench.log
+    grep 'Checkpoint Code: Socket 0, 0x58' testbench.log
+    grep 'Decompressing Linux' testbench.log
+    grep 'Linux version' testbench.log
+    grep 'debug_port.bank.backport' testbench.log | tail -5
+
+  COMMON FAILURES at Stage 6.6:
+    - 0x0058 absent -> BDS never reached OS loader
+    - Decompressing Linux absent after 0x0058 -> kernel image corrupt
+    - 0x0000 absent -> ExitBootServices never called (OS EFI stub crash)
+    - Linux version absent after Decompressing Linux -> early kernel crash
+
+
+================================================================================
+STAGE 6 -- COMPLETE MILESTONE SUMMARY (serconsole + debug_port)
+================================================================================
+
+  Sub-phase -> serconsole grep                       -> debug_port code(s)
+  -----------------------------------------------------------------------
+  6.0  IDI Mux         IDI Mux enabled               (none -- pre-UART)
+  6.0  SEC alive       (no serconsole)               0x0001-0x0006
+  6.0  SEC->PEI        (no serconsole)               0x007f
+  6.1  UART online     EarlyPlatformPchInit           (UART now active)
+  6.1  BIOS ID         BIOS ID: OKSDCRB1              --
+  6.1  Pre-mem done    SiliconPolicyUpdatePreMem.*End 0x00a0-0x00a9
+  6.2  MRC start       START_MRC_RUN                  0x00e0
+  6.2  DDR clocks      Initialize clocks for all MemSs 0x00ec
+  6.2  DIMM detect     JEDEC_DATA (x16)               0x00e1
+  6.2  MRC training    IpMcMemInitComplete.*bypassed  0x00e3-0x00e5, 0x00ac-0x00af
+  6.2  MRC algorithms  (dense MRC output)             0x00b0-0x00bf, 0x00c0-0x00df
+  6.2  MRC separator   (between algorithm steps)      0x007e (~20 times)
+  6.2  Post-MRC        PeiInstallPeiMemory            0x00e6-0x00ee
+  6.3  CXL ACPI        CEDT ACPI Table In CXL PEI     --
+  6.3  HOB done        EFI_HOB_TYPE_HANDOFF           --
+  6.3  DXE ready       DXE IPL Entry                  0x0051
+  6.4  DXE loaded      Loading DXE CORE at            0x0052
+  6.4  DXE dispatch    (driver loading)               0x0053-0x0056
+  6.4  SMM init        (MmEntry/MmExit callbacks)     0x0090
+  6.4  NVMe enum       NvmExpressDriverBindingStart   --
+  6.4  ReadyToBoot     OnReadyToBoot                  --
+  6.4  RTB code        PROGRESS CODE: V03051001        --
+  6.5  BDS boot        [Bds]Booting UEFI 1            0x0057
+  6.5  NVMe GPT        Valid efi partition table       --
+  6.5  Bootloader      Booting in blind mode           --
+  6.5  OS loaded       FPDT.*ExitBootServicesEntry     0x0058
+  6.6  IIO lock        IioSecureOnExitBootServices     --
+  6.6  POST 0x58       Checkpoint Code: Socket 0, 0x58 --
+  6.6  ExitBoot        ExitBootServiceSmmCallback      --
+  6.6  OS clears port  (no serconsole)                0x0000
+  6.6  Decompress      Decompressing Linux             --
+  6.6  Kernel          Booting the kernel              --
+  6.6  Stage7 start    Linux version                  0x0084, 0x00ee (OS-side)
+
+
+================================================================================
+STAGE 6 -- ONE-SHOT DIAGNOSTIC GREP
+================================================================================
+serconsole milestones (all 6 sub-phases in one command):
+
+  Use the milestone summary table above to identify which sub-phases completed.
+  Run: grep -n MILESTONE testbench.log for each key pattern to pinpoint failure.
+
+debug_port POST code timeline (Stage 6 only, excluding script wait-for lines):
+
+  zgrep debug_port.bank.backport log.gz | head -120
+  (filter out Simics script noise lines)
+
+  (For gzipped log: replace grep with zgrep, testbench.log with testbench.log.gz)
+
+Combined milestone + POST code timeline (both streams, sorted by line number):
+
+  Combined: grep -n debug_port.bank.backport|MILESTONE testbench.log | head -80
+
+
+================================================================================
+REFERENCE: Log line formats for both streams
+================================================================================
+
+  --- serconsole ---------------------------------------------------
+
+  FORMAT 1 -- raw output line (for grep):
+    <oakstream_rio.serconsole.con>TEXT
+
+  FORMAT 2 -- verbose form with Simics timestamp and VP core PC:
+    [oakstream_rio.serconsole.con info] {core[0][0] 0x<RIP> <cycles>} [HH:MM:SS] TEXT
+
+  Extract serconsole text only:
+    grep 'serconsole.con>' testbench.log | sed 's/.*serconsole\.con>//'
+
+  --- debug_port.bank.backport -------------------------------------------
+
+  FORMAT (verbose only -- no raw form):
+    [oakstream_rio.debug_port.bank.backport info] {core[0][0] 0x<RIP> <cycles>} [HH:MM:SS] 0x<CODE>
+
+  Fields:
+    RIP   = VP x86 core instruction pointer (the code that wrote port 0x80)
+    CODE  = 1-byte value written to port 0x80 (BIOS checkpoint / POST code)
+
+  RIP patterns observed in reference run:
+    0xFFEAxxxx  -> SEC phase code (distinct per checkpoint write site in SEC ROM)
+    0xFFBD42E1  -> Single port-0x80 write function inside FSP-M/MRC binary
+                   (same RIP for all MRC codes -- it is one shared write routine)
+
+  Code ranges and phase mapping:
+    0x0001-0x0007  SEC phase checkpoints (power-on)
+    0x007f         SEC complete / PEI handoff
+    0x00a0-0x00af  PEI pre-memory phase
+    0x00e0-0x00ef  FSP-M/MRC: entry, clock init, DIMM detect, memory map
+    0x007e         MRC in-progress separator (~20x between algorithm steps)
+    0x00b0-0x00bf  CMI / coherency fabric init
+    0x00c0-0x00df  MRC training algorithms (Rx/Tx/DFI/RCD)
+    0x0070-0x007f  MRC checkpoints and separators
+    0x0051-0x0058  Post-MRC PEI through DXE to OS handoff
+    0x0090         SMM infrastructure
+    0x0000         OS clears/resets port 0x80 after ExitBootServices
+    0x0084, 0x00ee ACPI/runtime codes written by OS (post-ExitBoot, not BIOS)
+
+  Count in reference run (Stage 6 only):  115 total debug_port entries
+
+  WARNING: Lines ~623564-623953 in testbench.log contain 0x7f and 0x84
+  as part of Simics wait-for-log command status lines -- NOT debug_port writes.
+  Filter with: grep -v '^6[2-9][0-9][0-9][0-9][0-9]:'
+
+  To decode POST codes, use the bios-post-code-decoder DAIV skill (DMR codes).
+================================================================================
