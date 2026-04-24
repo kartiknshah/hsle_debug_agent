@@ -63,6 +63,22 @@ milestones for each:
 **Read `bios_flow.txt` whenever Stage 6 is the failing stage**, before drilling down, to
 pinpoint the exact sub-phase where BIOS stopped.
 
+For Stage 5 (RTL reset phases) sub-event analysis, additionally read:
+```
+.github/skills/hsle-run-debugger/reset_phase_flow.txt
+```
+
+This file documents **three parallel log streams** inside `testbench.log` during Stage 5:
+
+| Stream | Log prefix | Symmetry rule |
+|--------|-----------|---------------|
+| CBB BOOT_FSM / Phase markers | `Inform COLD\|WARM` | N/A -- single sequencer |
+| HWRS events | `sequencer_log: HWRS -` | Both **imh0 AND imh1** must emit each event |
+| IMH Primecode states | `imh primecode state` | Both **die8 AND die9** must complete each state |
+
+**Read `reset_phase_flow.txt` whenever Stage 5 is the failing stage**, to identify the exact
+sub-event and die/IMH instance where the hang occurred.
+
 ---
 
 ## Procedure
@@ -187,13 +203,25 @@ markers** appear. The first stage with missing markers is the failure point.
 | Phase 5 end | `End of RESET_PHASE_5` | Late init done |
 | Phase 6 start | `Start of RESET_PHASE_6` | Core release → triggers hybrid switch |
 
-**Common Stage 5 failures**:
+**Common Stage 5 failures** (high-level — see `reset_phase_flow.txt` for detailed sub-event drill-down):
 - Stuck before Phase 1 → S3M boot failure; check S3M fmod bypass, IBL loading
 - Phase 2 never ends → PUnit primecode hang; check primecode image version
 - Phase 3 INFRA incomplete → Infrastructure init stall; check both IMH dies (imh8 and imh9 must both report)
 - Phase 3 D2D never completes → UCIe link train failure between IMH↔CBB; check UCIe ignite scripts
 - Phase 4 hang → DDR memory training failure; check DFI xtors, DIMM config
 - Phase 5 hang → Late coherency setup failure; check UPI/fabric init
+
+> **Stage 5 Deep Dive**: When any Phase 3--5 milestone is missing, load `reset_phase_flow.txt`
+> and run the three-stream drill-down (Step 4 below). Key checks:
+> - **BOOT_FSM last sub-event** -- pinpoints exactly where phase1 stalled within S3M boot
+> - **HWRS symmetry** -- `grep "sequencer_log: HWRS" | grep -oP "imh\\s*\\d+" | sort | uniq -c`
+>   Unequal counts for imh0/imh1 = one IMH die stalled
+> - **Primecode symmetry** -- `grep "imh primecode state" | grep -oP "die\\d+" | sort | uniq -c`
+>   Unequal counts for die8/die9 = one IMH die stalled; last state = stall point
+>
+> **Warm Reset (SWR)**: If run includes a warm reset cycle, `Inform WARM` lines appear in the
+> BOOT_FSM stream. Warm path omits `BOOT_FSM_DFX_AGG_FUSE_PULL` and requires `BOOT_FSM_IS_DOWN`
+> before phase1. Missing `BOOT_FSM_IS_DOWN` = HW did not enter reset cleanly.
 
 #### STAGE 6: BIOS Boot
 
@@ -203,7 +231,7 @@ markers** appear. The first stage with missing markers is the failure point.
 
 Run the Stage 6 sub-phase milestone grep first:
 ```bash
-grep -n "IDI Mux enabled\|EarlyPlatformPchInit\|BIOS ID:\|SiliconPolicyUpdatePreMem.*End.*Pre-Memory\|START_MRC_RUN\|Initialize clocks for all MemSs\|JEDEC_DATA\|IpMcMemInitComplete\|PeiInstallPeiMemory\|CEDT ACPI Table\|DXE IPL Entry\|Loading DXE CORE\|NvmExpressDriverBindingStart\|OnReadyToBoot\|PROGRESS CODE: V03051001\|\[Bds\]Booting\|Valid efi partition table\|Booting in blind mode\|IioSecureOnExitBootServices\|ExitBootServiceSmmCallback\|Decompressing Linux\|Linux version" "$TBLOG"
+grep -n "IDI Mux enabled\|Start of uBIOS\|End of RESET_PHASE_7\|END_OF_BIOS\|EarlyPlatformPchInit\|BIOS ID:\|SiliconPolicyUpdatePreMem.*End.*Pre-Memory\|START_MRC_RUN\|Initialize clocks for all MemSs\|JEDEC_DATA\|IpMcMemInitComplete\|PeiInstallPeiMemory\|CEDT ACPI Table\|DXE IPL Entry\|Loading DXE CORE\|NvmExpressDriverBindingStart\|OnReadyToBoot\|PROGRESS CODE: V03051001\|\[Bds\]Booting\|Valid efi partition table\|Booting in blind mode\|IioSecureOnExitBootServices\|ExitBootServiceSmmCallback\|Decompressing Linux\|Linux version" "$TBLOG"
 ```
 
 Also check debug_port POST code progress (shows SEC and MRC sub-phases not visible in serconsole):
@@ -216,6 +244,8 @@ grep "debug_port.bank.backport" "$TBLOG" | head -120
 | Sub-stage | Marker | Grep pattern | Indicates |
 |-----------|--------|-------------|----------| 
 | **6.0 SEC** | Hybrid switch done | `IDI Mux enabled` | VP cores start fetching BIOS |
+| 6.0 SEC | BIOS exec started | `Start of uBIOS` | Simics confirms VP instruction fetch began |
+| 6.0 SEC | BIOS-only ACED | `End of RESET_PHASE_7` / `END_OF_BIOS` | BIOS-only test passed; absent in SVOS runs |
 | 6.0 SEC | SEC alive | debug_port `0x0001` | SEC ROM execution started |
 | 6.0 SEC | SEC complete | debug_port `0x007f` | SEC->PEI handoff imminent |
 | **6.1 Early PEI** | UART online | `EarlyPlatformPchInit` | First serconsole output |
@@ -369,15 +399,44 @@ grep "IpMcMemInitComplete" "$TBLOG"
 ```
 
 #### For reset phase failures (Stage 5):
-```bash
-# Show all reset phase markers with line numbers
+
+> **Read `reset_phase_flow.txt` first** to understand all three log streams before running the greps below.  > **Emurun options affect cycle timing validity**: The cycle-timing hints in `reset_phase_flow.txt` > are derived from a specific golden run. If the run under analysis uses different emurun options, > those timings may not apply. Before treating any timing delta as a hang indicator, check: > - `-ver` / `--ver` (RTL model version) — different model = different timing baseline > - `*_tracker_en` flags — extra trackers add significant cycle overhead per phase > - `-xtor` / `-xtors` options — transactor changes alter simulation speed > - `-override_input_dir` — different input binaries may produce different phase durations > > These are the four fields compared by `EmurunOptChecker.py` in the reset_checker_tools repo. > If any differ from the golden, use relative ordering of events (not absolute cycle counts) > to determine whether a stream is stalled.  ```bash
+# Show all high-level reset phase markers
 grep -n "RESET_PHASE" "$TBLOG"
 
-# Verify both IMH dies reported (imh8 AND imh9 must appear)
-grep "RESET_PHASE_3_INFRA is complete" "$TBLOG"
+# Stall locator: shows exactly where script is stuck waiting (D2D/Phase4/Phase5 only;
+# "Waiting for End of RESET_PHASE_3_INFRA marker" is commented out in script -- not logged)
+grep "Waiting for End of RESET_PHASE" "$TBLOG"
+
+# --- STREAM 1: CBB BOOT_FSM + phase trigger assertions ---
+grep -n "Inform COLD\|Inform WARM\|BOOT_FSM\|Starting phase\|RstCore\|xxWarmBootTrigger\|lip_trigger\|BIOS Start\|BIOS Done\|Begin WARM Reset\|BOOT_FSM_IS_DOWN" "$TBLOG"
+
+# Find exactly where BOOT_FSM stalled (last sub-event in phase1)
+grep "BOOT_FSM" "$TBLOG" | tail -5
+
+# Check whether phase triggers were asserted
+grep "RstCore\|lip_trigger\|xxWarmBootTrigger" "$TBLOG"
+
+# --- STREAM 2: HWRS events + symmetry check ---
+grep -n "sequencer_log: HWRS" "$TBLOG"
+
+# Symmetry check: both imh0 and imh1 must have equal event counts
+grep "sequencer_log: HWRS" "$TBLOG" | grep -oP "imh\s*\d+" | sort | uniq -c
+
+# --- STREAM 3: IMH Primecode states + symmetry check ---
+grep -n "imh primecode state" "$TBLOG"
+
+# Find last primecode state reached (stall point)
+grep "imh primecode state" "$TBLOG" | tail -10
+
+# Symmetry check: both die8 and die9 must have equal state counts
+grep "imh primecode state" "$TBLOG" | grep -oP "die\d+" | sort | uniq -c
 
 # Check for D2D link train issues
 grep "D2D\|UCIe\|link train" "$TBLOG" | tail -20
+
+# Warm reset: check BOOT_FSM_IS_DOWN appeared after warm reset triggered
+grep "Inform WARM\|BOOT_FSM_IS_DOWN" "$TBLOG" | head -10
 ```
 
 #### For OS boot PPR test completion check (Stage 7–8):
@@ -447,6 +506,18 @@ Match findings against this catalog of known failure signatures:
 | `PPR_TEST_DONE` absent + `Auto exit script: exiting` + no `results.log` | 8 | PPR auto-exit fired before test completion | Check PPR_auto_exit timeout; verify PPR test scripts are present in OS image |
 | `dmr-bkc login:` present but no `PPR_TEST_DONE` | 7–8 | CentOS booted to login but PPR test did not run | Check PPR test scripts on the CentOS disk image |
 | `root@sut:` present but no `PPR_TEST_DONE` | 7–8 | SVOS booted to shell but PPR test did not run | Check PPR test scripts on the SVOS disk image |
+| CBB stuck at `BOOT_FSM_SA_PLL_FUSE_PULL`, no `BOOT_FSM_DOWNLOAD_UC_FW` | 5 | S3M not ready to serve UC FW download | Check S3M FW load, fuse image availability |
+| CBB stuck at `BOOT_FSM_DOWNLOAD_UC_FW`, no `xxWarmBootTrigger` received | 5 | UC FW download timeout (expect ~363M cold / ~408M warm cycles) | Check S3M FW version; verify `-enable_s3m_loading` and S3M fmod |
+| `xxWarmBootTrigger` never received after `BOOT_FSM_DOWNLOAD_UC_FW` | 5 | S3M FW failed to assert WarmBootTrigger | Check S3M FW version and FW_BYPASS_0 value |
+| `RstCore assertion` never received (stuck at phase2 wait) | 5 | PUnit primecode never asserted RstCore | Check primecode image; look at last primecode state reached |
+| `lip_trigger (bsp)` never received (stuck at phase3 wait) | 5 | HWRS/PUnit never released lip_trigger | Coherency/fabric stall; check last HWRS event and primecode state |
+| HWRS event count unequal for imh0 vs imh1 | 5 | One IMH die stalled in reset sequencer | Run HWRS imh symmetry check; inspect primecode state for stalled die |
+| Primecode state count unequal for die8 vs die9 | 5 | One IMH die hung at a primecode sync point | Run primecode die symmetry check; last state on lagging die = stall point |
+| Primecode stuck at `WAIT_FOR_CBB_D2D_READY` (0x13) | 5 | CBB D2D link never came up | Check UCIe ignite scripts; verify CBB sle.simics ran; check D2D trackers |
+| Primecode stuck at `HPM_CREDIT_INIT_CBB_SYNC` (0x14) | 5 | CBB-to-IMH HPM credit deadlock | Verify UCIe D2D link up in both directions; check CBB primecode state |
+| Primecode stuck at `D2D_MB_BASIC_TRAINING` (0x28) | 5 | D2D mailbox training failure | Check UCIe protocol trackers; D2D link quality |
+| `BOOT_FSM_IS_DOWN` missing after `Begin WARM Reset` | 5 | HW did not enter warm reset IS_DOWN state | Warm reset sequencing error; check SVID/VR, CPLD state |
+| `PCODE2_COMPLETE` missing after `HWRS_RESET_COMPLETE` | 5 | Phase5 primecode stall after HWRS declares done | Check last primecode state on both dies (die8, die9) |
 
 ---
 

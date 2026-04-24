@@ -47,6 +47,22 @@ Do **not** guess or invent codes. If a code is not in the database, say so.
 ### From an HSLE Run (testbench.log)
 
 The BIOS serial output is embedded in `testbench.log` as lines containing `serconsole.con>`.
+
+> **Embedded BIOS log extraction**: For runs that include a full boot-to-OS cycle,
+> `testbench.log` may contain a dedicated BIOS log section bracketed by:
+> ```
+> ################ Printing Logs #################
+> ==> <log_filename> <==
+> ...log content...
+> Done printing logs at end of run
+> ```
+> To extract and analyze the embedded BIOS serconsole log separately from the inline stream:
+> ```bash
+> # Extract embedded log section from testbench.log
+> awk '/Printing Logs/,/Done printing logs/' "$TBLOG" | grep "serconsole" | head -200
+> # Or use the split_logs.py utility from reset_checker_tools to split into per-flow files
+> ```
+> This section is most useful for multi-reset (SWR) runs where two BIOS boot flows are embedded.
 Extract and analyze it with:
 
 ```bash
