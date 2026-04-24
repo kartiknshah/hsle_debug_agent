@@ -475,6 +475,7 @@ Forces by:  input_dir/simics_scripts/dmr_imh_forces.simics
    |
    |-- 5.4 RESET PHASE 3 — D2D
    |     Die-to-Die link training (UCIe between IMH↔CBB)
+   |     "[reset_phase_marker.simics] Waiting for End of RESET_PHASE_3_D2D marker for socket 0"
    |     "HWRS - RESET_PHASE_3_D2D is complete for socket 0 !!" (both IMH dies)
    |     "End of RESET_PHASE_3_D2D and start of RESET_PHASE_3_INFRA_CFG"
    |
@@ -485,10 +486,12 @@ Forces by:  input_dir/simics_scripts/dmr_imh_forces.simics
    |
    |-- 5.6 RESET PHASE 4
    |     Memory controller init, DDR training
+   |     "[reset_phase_marker.simics] Waiting for End of RESET_PHASE_4 marker for socket 0"
    |     "End of RESET_PHASE_4 and start of RESET_PHASE_5"
    |
    |-- 5.7 RESET PHASE 5
    |     Late initialization, coherency setup
+   |     "[reset_phase_marker.simics] Waiting for End of RESET_PHASE_5 marker for socket 0"
    |     "End of RESET_PHASE_5 for socket 0"
    |
    |-- 5.8 RESET PHASE 6 (Core release)
@@ -523,6 +526,16 @@ Driven by: Simics VP x86 ISS executing BIOS from IFWI flash image
    |
    |-- 6.4 BDS PHASE (Boot Device Selection)
    |     Selects boot device (NVMe with SVOS image)
+   |
+   |-- 6.5 BIOS COMPLETION MARKERS (Simics-level, reset_phase_marker_bios branch)
+   |     "[reset_phase_marker.simics] Start of uBIOS for socket 0"
+   |       Emitted at BIOS_START_FFFFFFE0 detection (VP cores begin BIOS execution)
+   |       Appears in ALL runs; use to confirm hybrid switch worked and BIOS is running.
+   |     "[reset_phase_marker.simics] End of RESET_PHASE_7 for socket 0"
+   |       Emitted at BIOS_TAIL_ACED_FFFFFF00 detection (BIOS-only test ACED exit)
+   |       ABSENT in SVOS/OS-boot runs -- BIOS exits via ExitBootServices instead.
+   |     "[reset_phase_marker.simics] END_OF_BIOS"
+   |       Immediately follows End of RESET_PHASE_7; also absent in SVOS runs.
    |
    +-- BIOS completes, hands off to OS bootloader
 

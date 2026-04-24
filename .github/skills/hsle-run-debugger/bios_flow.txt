@@ -11,7 +11,7 @@
   STAGE 6 TRIGGER : IDI Mux enabled (testbench.log line ~352002)
   STAGE 6 END     : [    0.000000] Linux version (testbench.log line ~613682)
 
---- TWO LOG STREAMS IN STAGE 6 ---
+--- THREE LOG STREAMS IN STAGE 6 ---
   1. serconsole : BIOS UART console output (~130,144 lines in Stage 6)
        Prefix  : <oakstream_rio.serconsole.con>
        Content : Human-readable BIOS debug prints, driver load messages
@@ -24,6 +24,19 @@
                  SEC entries RIP in 0xFFEAxxxx; MRC entries RIP = 0xffbd42e1
        Value   : Only source of progress info during SEC (6.0) and dense MRC.
                  Decode using bios-post-code-decoder skill (DMR codes).
+
+  3. reset_phase_marker : Simics-level BIOS lifecycle markers (in testbench.log)
+       Source  : input_dir/simics_scripts/reset_phase_marker_2imh.simics
+                 (script branch "reset_phase_marker_bios")
+       Markers :
+         "[reset_phase_marker.simics] Start of uBIOS for socket N"
+           -> emitted when BIOS_START_FFFFFFE0 detected; VP cores have begun BIOS exec.
+              Appears in ALL runs. If absent after IDI Mux enabled -> BIOS fetch failure.
+         "[reset_phase_marker.simics] End of RESET_PHASE_7 for socket N"
+           -> emitted when BIOS_TAIL_ACED_FFFFFF00 detected (BIOS-only test ACED exit)
+              ABSENT in SVOS/OS-boot runs -- those exit via ExitBootServices.
+         "[reset_phase_marker.simics] END_OF_BIOS"
+           -> immediately follows End of RESET_PHASE_7; absent in SVOS runs.
 ================================================================================
 
 

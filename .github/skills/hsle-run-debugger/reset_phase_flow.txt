@@ -1,0 +1,336 @@
+================================================================================
+              DMR MCP ICI HSLE -- RTL RESET PHASE DETAILED FLOW (STAGE 5)
+              =============================================================
+  Platform  : MCP 1-Socket, 2 IMH dies (imh8/die8 + imh9/die9), 4 CBB dies
+  Reference : mcp_ici_hsle_svos_fmod.0 / swr_reset run (coldboot2swr)
+  Trackers  : hwrs_tracker_en, primecode_tracker_en, idi_tracker_en enabled
+  Source    : reset_checker_tools/TestBenchLogChecker.py, SimicsLogChecker.py
+
+--- THREE PARALLEL LOG STREAMS IN STAGE 5 (all in testbench.log) ---
+
+  STREAM 1 -- CBB BOOT_FSM / RESET PHASE MARKERS
+    Regex  : \[(\d+)\] \[([^\]]+)\] - Inform\s+(COLD|WARM)\s+\|\s+(\d+)\s*-\s*([\w-]+)\s*-\s*(.*)
+    Format : [cycle] [HH:MM:SS] - Inform COLD|WARM | reset_count - phase_num - event_name
+    Source : input_dir/simics_scripts/reset_phase_marker_2imh.simics
+
+  STREAM 2 -- HWRS (Hardware Reset Sequencer) EVENTS
+    Regex  : \{emu\.engine [^\s]+ (\d+)\} \[([0-9:.]+)\].*?(?:imh\s*(\d+)\s*)?sequencer_log: HWRS - (.+?)(?: for socket (\d+))?(?: !!|$)
+    Format : {emu.engine addr cycle} [time] imh<N> sequencer_log: HWRS - <event> for socket <N> !!
+    Source : hwrs_tracker (hwrs_hw_monitor64_zebu.so)
+    Rule   : Every event MUST appear for BOTH imh0 AND imh1. Missing one = asymmetric failure.
+
+  STREAM 3 -- IMH PRIMECODE STATES
+    Regex  : (\d+) cycles - imh primecode state (\S+) completed for socket (\d+) die(\d+) \((0x[0-9a-f]+)\)
+    Format : cycles - imh primecode state <STATE> completed for socket <N> die<N> (0xHEX)
+    Source : primecode_tracker (primecode_tracker_en)
+    Rule   : Every state MUST appear for BOTH die8 (imh8) AND die9 (imh9). Missing one = stalled IMH die.
+================================================================================
+
+
+================================================================================
+STREAM 1: CBB BOOT_FSM + RESET PHASE SEQUENCE
+================================================================================
+
+--- COLD BOOT PATH ---
+
+[cycle ~1]       [~T+0m]  - Inform COLD | 0 - -- - Pre-phase
+[cycle ~2]       [~T+0m]  - Inform COLD | 0 - 0  - Starting phase0
+[cycle ~200002]  [~T+1m]  - Inform COLD | 0 - 1  - Starting phase1
+    |
+    |-- BOOT FSM sub-sequence (within phase 1):
+    |     [cycle ~200053]   BOOT_FSM_SWITCH_RO_TO_XTAL
+    |     [cycle ~1.12B ]   BOOT_FSM_START_FUSE_SENSE
+    |     [cycle ~1.12B ]   BOOT_FSM_DFX_AGG_FUSE_PULL      <- COLD only
+    |     [cycle ~1.12B ]   BOOT_FSM_SA_PLL_FUSE_PULL
+    |     [cycle ~1.48B ]   BOOT_FSM_DOWNLOAD_UC_FW          <- takes ~362M cycles / ~7 min
+    |     Waiting for phase2 to start (Waiting for xxWarmBootTrigger assertion)
+    |     Received xxWarmBootTrigger assertion
+    |
+[cycle ~1.485B]  - Inform COLD | 0 - 2  - Starting phase2
+    |     NOTE: Phase 2 script sync is DIE9-first then DIE8 (reversed vs all other phases).
+    |           A die9 stall here blocks the sequencer before die8 is even checked.
+    |     Waiting for phase3 to start (Waiting for RstCore assertion)
+    |     Received RstCore assertion
+    |
+[cycle ~1.980B]  - Inform COLD | 0 - 3  - Starting phase3
+    |     Waiting for phase4 to start (Waiting for lip_trigger (bsp) assertion)
+    |     Received lip_trigger (bsp) assertion  -> triggers Hybrid Switch (hsle.simics step 3.7c)
+    |
+[cycle ~7.9B]    - Inform COLD | 0 - 4  - Starting phase4
+    |     BIOS Start
+    |     BIOS Done
+    |     Out of reset
+
+NOTE: BOOT_FSM_DFX_AGG_FUSE_PULL appears on COLD only; absent on WARM reset.
+NOTE: lip_trigger (bsp) assertion triggers the Hybrid Switch in hsle.simics.
+
+--- WARM RESET PATH (Software Warm Reset -- SWR) ---
+
+[cycle ~7.91B]   - Inform WARM | 1 - -- - Begin WARM Reset
+[cycle ~7.91B]   - Inform WARM | 1 - -- - Pre-phase
+[cycle ~7.97B]   - Inform WARM | 1 - -- - BOOT_FSM_IS_DOWN   <- confirms HW is down; MUST appear
+[cycle ~7.98B]   - Inform WARM | 1 - 1  - Starting phase1
+    |
+    |-- BOOT FSM sub-sequence (within warm phase 1):
+    |     Waiting for phase2 to start (Waiting for xxWarmBootTrigger assertion)
+    |     BOOT_FSM_SWITCH_RO_TO_XTAL
+    |     BOOT_FSM_START_FUSE_SENSE
+    |     BOOT_FSM_SA_PLL_FUSE_PULL            <- no DFX_AGG_FUSE_PULL on WARM
+    |     BOOT_FSM_DOWNLOAD_UC_FW              <- takes ~407M cycles / ~9 min
+    |     Received xxWarmBootTrigger assertion
+    |
+[cycle ~8.74B]   - Inform WARM | 1 - 2  - Starting phase2
+    |     NOTE: Phase 2 script sync is DIE9-first then DIE8 (same reversed order as COLD).
+    |     Received RstCore assertion
+    |
+[cycle ~9.20B]   - Inform WARM | 1 - 3  - Starting phase3
+    |     Received lip_trigger (bsp) assertion  -> triggers second Hybrid Switch
+    |     BIOS Start / BIOS Done / Out of reset
+
+--- KEY TIMING REFERENCE (from swr_cbb_reset_events_golden.csv) ---
+
+  COLD Phase 1 BOOT_FSM sub-events (delta cycles from Starting phase1):
+    BOOT_FSM_SWITCH_RO_TO_XTAL      : +~918M cycles  / +~918 sec wall
+    BOOT_FSM_START_FUSE_SENSE       : +~30K  cycles  / +~1 sec
+    BOOT_FSM_DFX_AGG_FUSE_PULL      : +~19K  cycles  / +~5 sec   (COLD only)
+    BOOT_FSM_SA_PLL_FUSE_PULL       : +~1.14M cycles / +~5 sec
+    BOOT_FSM_DOWNLOAD_UC_FW         : +~363M cycles  / +~447 sec  <- longest step
+    xxWarmBootTrigger assertion     : +~1.4M cycles  / +~10 sec
+    RstCore assertion               : +~494M cycles  / +~888 sec
+
+  WARM Phase 1 BOOT_FSM sub-events (delta cycles from Starting phase1):
+    BOOT_FSM_SWITCH_RO_TO_XTAL      : +~350M cycles  / +~417 sec
+    BOOT_FSM_START_FUSE_SENSE       : +~23K  cycles  / +~2 sec
+    BOOT_FSM_SA_PLL_FUSE_PULL       : +~194K cycles  / +~3 sec
+    BOOT_FSM_DOWNLOAD_UC_FW         : +~408M cycles  / +~542 sec
+    xxWarmBootTrigger assertion     : +~1.4M cycles  / +~7 sec
+    RstCore assertion               : +~462M cycles  / +~757 sec
+================================================================================
+
+
+================================================================================
+STREAM 2: HWRS (HARDWARE RESET SEQUENCER) EVENT SEQUENCE
+================================================================================
+Log prefix: sequencer_log: HWRS -
+
+SYMMETRY RULE: Both IMH instances (imh 0 = imh8, imh 1 = imh9) MUST emit each event.
+               If an event appears for only one IMH -> asymmetric failure at that event.
+
+--- COLD BOOT SEQUENCE (from swr_hwrs_reset_events_golden.csv) ---
+
+  Event                                                IMH  Socket  Approx Cycle
+  ---------------------------------------------------------------------------------
+  VNN_EARLY_BOOT_DONE asserted                          0    0      ~160M
+  VNN_EARLY_BOOT_DONE asserted                          1    0      ~800M  (die9 +640M cycles)
+  Initiating UCIE SB Start-up                           -    0      ~643M / ~882M (per IMH)
+  START_BOOT_SEQ register is set. S3M Start Boot Seq    0    0      ~1.055B
+  START_BOOT_SEQ register is set. S3M Start Boot Seq    1    0      ~1.058B
+  REFCLK_READY asserted by HWRS to start PWRGOOD        1    0      ~1.120B
+  REFCLK_READY asserted by HWRS to start PWRGOOD        0    0      ~1.120B
+  RESET_PHASE_3_INFRA is complete                       1    0      ~1.121B
+  RESET_PHASE_3_INFRA is complete                       0    0      ~1.121B
+  RESET_PHASE_3_D2D is complete                         0    0      ~1.475B
+  Initiate PLL Reset Pull                               0    0      ~1.475B
+  RESET_PHASE_3_D2D is complete                         1    0      ~1.475B
+  Initiate PLL Reset Pull                               1    0      ~1.475B
+  Initiate PLL Bringup                                  0    0      ~1.507B
+  Initiate PLL Bringup                                  1    0      ~1.508B
+  RESET_PHASE_3_INFRA_CFG is complete                   0    0      ~1.508B
+  RESET_PHASE_3_INFRA_CFG is complete                   1    0      ~1.508B
+  End of Feature_IP_Bringup                             0    0      ~1.523B
+  End of Feature_IP_Bringup                             1    0      ~1.523B
+  ---------------------------------------------------------------------------------
+
+  ** SIMICS SCRIPT STALL INDICATORS (reset_phase_marker_2imh.simics log lines) **
+  These lines appear in testbench.log between HWRS events. If you see a "Waiting"
+  line but NOT the matching "End of RESET_PHASE_X" completion line -> run is stalled.
+     "[reset_phase_marker.simics] Waiting for End of RESET_PHASE_3_D2D marker for socket N"
+       -> emitted before waiting for RESET_PHASE_3_D2D complete HWRS event
+     "[reset_phase_marker.simics] Waiting for End of RESET_PHASE_4 marker for socket N"
+       -> emitted after all HWRS events; waits for Phase 4 (Feature_IP_Bringup) complete
+     "[reset_phase_marker.simics] Waiting for End of RESET_PHASE_5 marker for socket N"
+       -> emitted after Phase 4; waits for Phase 5 (late init) complete
+  NOTE: "Waiting for End of RESET_PHASE_3_INFRA marker" is COMMENTED OUT in the
+        script -- it does NOT appear in testbench.log (no stall indicator for INFRA).
+
+--- WARM RESET SEQUENCE ---
+
+  RESET_PHASE_3_INFRA is complete    imh1  socket0  ~8.407B
+  RESET_PHASE_3_INFRA is complete    imh0  socket0  ~8.407B
+  RESET_PHASE_3_D2D is complete      imh0  socket0  ~8.719B
+  Initiate PLL Reset Pull            imh0  socket0  ~8.719B
+  RESET_PHASE_3_D2D is complete      imh1  socket0  ~8.719B
+  Initiate PLL Reset Pull            imh1  socket0  ~8.719B
+  Initiate PLL Bringup               imh0  socket0  ~8.751B
+  Initiate PLL Bringup               imh1  socket0  ~8.751B
+  RESET_PHASE_3_INFRA_CFG is complete imh0 socket0  ~8.752B
+  RESET_PHASE_3_INFRA_CFG is complete imh1 socket0  ~8.752B
+  End of Feature_IP_Bringup          imh0  socket0  ~8.765B
+  End of Feature_IP_Bringup          imh1  socket0  ~8.765B
+
+--- DELTA REFERENCE (COLD, from swr_hwrs_reset_events_golden.csv) ---
+
+  VNN_EARLY_BOOT_DONE (imh0) -> Initiating UCIE SB   : +~483M cycles / +~578 sec
+  ...UCIE SB -> START_BOOT_SEQ (imh0)                : +~173M cycles / +~211 sec
+  START_BOOT_SEQ -> REFCLK_READY (imh0)              : +~62M  cycles / +~119 sec
+  REFCLK_READY -> RESET_PHASE_3_INFRA (imh0)         : +~630K cycles / +~9 sec
+  RESET_PHASE_3_INFRA -> RESET_PHASE_3_D2D (imh0)    : +~354M cycles / +~431 sec
+  RESET_PHASE_3_D2D -> PLL Bringup (imh0)            : +~32M  cycles / +~58 sec
+  PLL Bringup -> RESET_PHASE_3_INFRA_CFG (imh0)      : +~424K cycles / +~4 sec
+  RESET_PHASE_3_INFRA_CFG -> End Feature_IP (imh0)   : +~14.9M cycles / +~20 sec
+================================================================================
+
+
+================================================================================
+STREAM 3: IMH PRIMECODE STATE SEQUENCE
+================================================================================
+Log prefix: imh primecode state <STATE> completed for socket N dieN (0xHEX)
+
+SYMMETRY RULE: Both die8 (imh8) AND die9 (imh9) MUST complete each state.
+               If a state appears for die8 but not die9 (or vice versa) -> one IMH die hung.
+               States run roughly in parallel; die9 may lag die8 slightly.
+
+--- COMPLETE STATE SEQUENCE (COLD BOOT, Socket 0, from swr_imh_pcode_reset_events_golden.csv) ---
+
+  Hex   State Name                           Cycle (die8)   Notes
+  ---------------------------------------------------------------------------------
+  0x01  CLEAR_HPM_SRAM                       ~1.080B        die9 starts ~22M cycles later
+  0x02  FUSE_PULL                            +~150K cycles
+  0x03  FUSE_POPULATE                        +~32K  cycles
+  0x04  IMH_EARLY_SURVIVABILITY              +~8K   cycles
+  0x05  FUSE_PULL_PUNIT_LOCK_BITS            +~42K  cycles
+  0x06  SVID_ACTIONS                         +~25K  cycles
+  0x07  CONFIGURE_HPM                        +~55K cycles (die8) / +~41K (die9)
+  0x08  HPM_CREDIT_INIT_IMH_SYNC             *** SYNC POINT -- IMH-to-IMH HPM handshake
+  0x09  CONFIGURE_CXL_HPM                    +~314K cycles (die9 waits die8)
+  0x0a  HPM_ENFORCE_AGENT_ID                 +~4K / +~5K cycles
+  0x0b  READ_POC_STRAPS                      +~3K / +~27K cycles
+  0x0c  READ_EPOC_VDM_STRAPS                 +~79K / +~380K cycles
+  0x0d  DISTRIBUTE_STRAPS_IMH_SYNC           *** SYNC POINT -- strap distribution
+  0x0e  RESOLVE_STRAPS                       +~1K / +~25K cycles
+  0x0f  RESOLVE_IP_DISABLES                  +~459K / +~11K cycles
+  0x10  APPLY_IP_DISABLES                    +~387K / +~31K cycles
+  0x11  REF_CLK_READY_HANDSHAKE              ref clock handshake
+  0x12  SYNC_DISABLES_UPSTREAM               upstream sync
+  0x13  WAIT_FOR_CBB_D2D_READY              ~1.475B  *** SYNC POINT -- waits for CBB D2D link up
+  0x14  HPM_CREDIT_INIT_CBB_SYNC            ~1.485B  *** SYNC POINT -- IMH-to-CBB HPM credits
+  0x15  FEATURE_IP_BRING_UP                ~1.523B
+  0x16  FW_INIT_PH4                         ~1.525B
+  0x17  PM_HANDOFF_PH4_INIT
+  0x18  PH4_OOBMSM_CONFIG_START
+  0x19  MARK_PHASE4_COMPLETE
+  0x1a  SYNC_XXRESET_READY_UPSTREAM
+  0x1b  DMOPI_LINK_STATUS
+  0x1c  END_PHASE4_SUICIDE                  <- end of phase4 primecode fw
+  0x1d  FW_INIT_PH5
+  0x1e  TPMI_INIT
+  0x1f  PH5_IP_CONFIG_START
+  0x20  PH5_SAFE_MODE_CLEAR
+  0x21  READ_BIST_POC
+  0x22  DISTRIBUTE_REFETCH_STRAPS_IMH_SYNC
+  0x23  RESOLVE_REFETCHED_POC_STRAPS
+  0x24  DISTRIBUTE_STRAPS_CBB_SYNC
+  0x25  PCIE_CONFIG
+  0x26  CXL_CONFIG
+  0x27  D2D_MB_PRE_TRAINING_UPSTREAM_SYNC   *** SYNC POINT
+  0x28  D2D_MB_BASIC_TRAINING               <- D2D mailbox training
+  0x29  MESH_PROGRAMMING
+  0x2a  MC_PROGRAMMING
+  0x2b  CORE_LLC_ENABLE_UPSTREAM_SYNC       *** SYNC POINT
+  0x2c  RESOLVE_PACKAGE_BSP_AND_MISC
+  0x2d  CPU_RESET_DONE                      <- core reset released; Hybrid Switch imminent
+  0x2e  SAD_CONFIGURATION
+  0x2f  IO_STACK_CONFIG
+  0x30  UBOX_PROGRAMMING
+  0x31  PH5_IP_CONFIG_DONE
+  0x32  RESOLVE_SSP_MODE
+  0x33  NCU_CONFIG_SSP_ENTRY_SYNC           *** SYNC POINT
+  0x34  DISTRIBUTE_RESOLVED_CPU
+  0x35  ENTER_SSP_MODE
+  0x36  SSP_EXIT_SYNC                       *** SYNC POINT
+  0x37  TRIGGER_TSC_DOWNLOAD
+  0x38  PM_HANDOFF_PH5_INIT
+  0x39  HWRS_RESET_COMPLETE                 <- HWRS declares reset done
+  0x3a  TELE_CFG
+  0x3b  TELE_ENABLE
+  0x3c  PCODE2_COMPLETE                     <- phase5 primecode done
+  0x3d  FW_INIT_RUNTIME
+  0x3e  PREPARE_FOR_LOOP                    <- enters idle polling loop
+  ---------------------------------------------------------------------------------
+
+WARM RESET (key states that MUST appear on warm path for both dies):
+  HWRS_RESET_COMPLETE (0x39), PCODE2_COMPLETE (0x3c), PREPARE_FOR_LOOP (0x3e)
+  NOTE: On warm reset, primecode re-executes from WARM entry point, not 0x01.
+================================================================================
+
+
+================================================================================
+GREP COMMANDS FOR STAGE 5 ANALYSIS
+================================================================================
+
+TBLOG="<run_dir>/testbench.log"
+# If gzipped, replace grep with zgrep and cat with zcat throughout.
+
+# --- STREAM 1: CBB phase markers + BOOT_FSM sub-events ---
+grep -n "Inform COLD\|Inform WARM\|BOOT_FSM\|Starting phase\|RstCore\|xxWarmBootTrigger\|lip_trigger\|BIOS Start\|BIOS Done\|Out of reset\|Begin WARM Reset\|BOOT_FSM_IS_DOWN" "$TBLOG"
+
+# --- Check last BOOT_FSM sub-event (exactly where phase1 stalled) ---
+grep "BOOT_FSM" "$TBLOG" | tail -5
+
+# --- Check for phase trigger assertions ---
+grep "RstCore\|lip_trigger\|xxWarmBootTrigger" "$TBLOG"
+
+# --- STREAM 2: Full HWRS event stream ---
+grep -n "sequencer_log: HWRS" "$TBLOG"
+
+# --- HWRS symmetry check: count events per IMH instance ---
+grep "sequencer_log: HWRS" "$TBLOG" | grep -oP "imh\s*\d+" | sort | uniq -c
+# Expected: equal counts for imh0 and imh1. Mismatch = asymmetric failure.
+
+# --- HWRS symmetry check for a specific event ---
+grep "sequencer_log: HWRS - RESET_PHASE_3_INFRA is complete" "$TBLOG"
+# Expect: one line with "imh 0" AND one line with "imh 1"
+
+# --- STREAM 3: Full primecode state stream ---
+grep -n "imh primecode state" "$TBLOG"
+
+# --- Primecode: find last state reached (where did it stop?) ---
+grep "imh primecode state" "$TBLOG" | tail -10
+
+# --- Primecode symmetry check: count states per die ---
+grep "imh primecode state" "$TBLOG" | grep -oP "die\d+" | sort | uniq -c
+# Expected: equal counts for die8 and die9. Mismatch = one IMH die stalled.
+
+# --- Primecode symmetry check for a specific state ---
+grep "imh primecode state WAIT_FOR_CBB_D2D_READY completed" "$TBLOG"
+# Expect: one line with "die8" AND one line with "die9"
+
+# --- Check warm reset count ---
+grep "Inform WARM" "$TBLOG" | head -5
+
+# --- Verify emurun model/tracker match (timing invalid if different) ---
+grep "emurun\|_tracker_en\|-ver " "$TBLOG" | head -20
+================================================================================
+
+
+================================================================================
+STAGE 5 FAILURE SIGNATURES (derived from reset_checker_tools repo)
+================================================================================
+
+Signature                                        | Key Grep Evidence                                           | Root Cause
+----------------------------------------------------------------------------------------------------------------------------------------------------------------
+CBB stalls at BOOT_FSM_SA_PLL_FUSE_PULL          | Last BOOT_FSM = SA_PLL_FUSE_PULL; no DOWNLOAD_UC_FW         | S3M not ready to serve UC FW download
+CBB stalls at BOOT_FSM_DOWNLOAD_UC_FW            | Last BOOT_FSM = DOWNLOAD_UC_FW; no xxWarmBootTrigger        | UC FW download timeout (expect ~363M cold / ~408M warm cycles)
+xxWarmBootTrigger never received                 | Waiting for phase2 present; no Received xxWarmBootTrigger   | S3M FW failed to assert WarmBootTrigger
+RstCore assertion never received                 | Waiting for phase3 present; no Received RstCore assertion   | PUnit primecode never asserted RstCore
+lip_trigger never received                       | Waiting for phase4 present; no Received lip_trigger         | HWRS/PUnit never released lip_trigger (coherency stall)
+HWRS event missing for one IMH (asymmetric)      | HWRS event shows imh0 but not imh1 (or vice versa)          | One IMH die stalled; inspect primecode states for that die
+Primecode state missing for one die              | State appears for die8 not die9 (or vice versa)             | Die-to-die sync timeout; check UCIe/D2D link
+Primecode stuck at WAIT_FOR_CBB_D2D_READY (0x13) | Last state = 0x13 on both dies; no 0x14 or later            | CBB D2D link never came up (UCIe ignite issue)
+Primecode stuck at HPM_CREDIT_INIT_CBB_SYNC (0x14)| Last state = 0x14; no 0x15 or later                        | CBB-to-IMH HPM credit deadlock
+Primecode stuck at D2D_MB_BASIC_TRAINING (0x28)  | Last state = 0x28 on both dies; no 0x29                     | D2D mailbox training failure (UCIe protocol error)
+No VNN_EARLY_BOOT_DONE for one IMH               | die8 has VNN_EARLY_BOOT_DONE in HWRS; die9 does not         | IMH9 power domain issue or S3M loading failure for imh9
+BOOT_FSM_IS_DOWN missing on WARM reset           | Begin WARM Reset present; no BOOT_FSM_IS_DOWN               | HW did not properly enter IS_DOWN; warm reset sequencing error
+RstCore received but lip_trigger never fires     | Received RstCore present; phase3 entered; no Received lip_trigger | Coherency/fabric stall in phase3->4 transition
+PCODE2_COMPLETE missing (both dies)              | Last state = 0x39 HWRS_RESET_COMPLETE; no 0x3c              | Phase5 primecode stall after HWRS declares complete
+================================================================================

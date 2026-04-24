@@ -111,6 +111,7 @@ Top Errors:
       SKILL.md                         # 6-step debug procedure (loaded by agent)
       flow.txt                         # Golden execution flow (STAGE 0-8)
       bios_flow.txt                    # BIOS boot sub-phase flow (Stage 6.0-6.6)
+      reset_phase_flow.txt             # RTL reset sub-event reference (Stage 5, 3 streams)
     bios-issue-analyzer/
       SKILL.md                         # BIOS error decoder skill
       scripts/
@@ -131,7 +132,7 @@ README.md
 
 | Skill | Purpose |
 |-------|---------|
-| `hsle-run-debugger` | 9-stage golden flow comparison, milestone grep, Stage 6 sub-phase checklist, failure signature matching |
+| `hsle-run-debugger` | 9-stage golden flow comparison, milestone grep, Stage 5 reset sub-event drill-down (3 streams), Stage 6 sub-phase checklist, failure signature matching |
 | `bios-issue-analyzer` | Decodes EWL/IPSD/RC Fatal/ASSERT/POST codes from serconsole output or raw BIOS serial logs |
 
 ## How It Works
@@ -139,13 +140,40 @@ README.md
 When you type `@hsle_debug debug run at /nfs/...`, the agent:
 
 1. Loads `SKILL.md` (the step-by-step debug procedure)
-2. Reads `flow.txt` (the 9-stage golden execution flow) and `bios_flow.txt` (Stage 6 BIOS sub-phase detail)
+2. Reads `flow.txt` (the 9-stage golden execution flow), `bios_flow.txt` (Stage 6 BIOS sub-phase detail), and `reset_phase_flow.txt` (Stage 5 RTL reset sub-event reference)
 3. Locates and validates `testbench.log` in the provided run directory
 4. Runs stage-by-stage milestone grep checks (Stages 0-8)
-5. For Stage 6: runs the BIOS sub-phase checklist (6.0 SEC -> 6.6 ExitBootServices) using both serconsole and debug_port POST code streams
-6. Drills into the failure zone and matches against the known signature catalog
-7. If Stage 6/7 failed: loads `bios-issue-analyzer` to decode EWL/IPSD/RC Fatal/ASSERT/POST codes
-8. Produces a structured **HSLE Run Debug Summary**
+5. For Stage 5: drills into the 3 parallel reset log streams (CBB BOOT_FSM, HWRS, IMH Primecode), checks die/IMH symmetry, and matches against reset failure signatures
+6. For Stage 6: runs the BIOS sub-phase checklist (6.0 SEC -> 6.6 ExitBootServices) using serconsole, debug_port POST code, and reset_phase_marker streams
+7. Drills into the failure zone and matches against the known signature catalog
+8. If Stage 6/7 failed: loads `bios-issue-analyzer` to decode EWL/IPSD/RC Fatal/ASSERT/POST codes
+9. Produces a structured **HSLE Run Debug Summary**
+
+## Stage 5 RTL Reset Phase Analysis
+
+The `reset_phase_flow.txt` reference enables precise diagnosis of Stage 5 (RTL Reset Phase)
+failures by tracking **three parallel log streams** in `testbench.log`:
+
+| Stream | Source | Key content |
+|--------|--------|-------------|
+| CBB BOOT_FSM | `reset_phase_marker_2imh.simics` | Phase 0-4 transitions, BOOT_FSM sub-events, trigger assertions |
+| HWRS events | `hwrs_tracker` | Per-IMH reset sequencer events; must appear for both imh0 AND imh1 |
+| IMH Primecode states | `primecode_tracker` | 50+ firmware states (0x01-0x3e); must appear for both die8 AND die9 |
+
+**Symmetry rules**: HWRS events and Primecode states must appear for both IMH dies. A missing
+event on one die (e.g., `RESET_PHASE_3_D2D complete` on imh0 but not imh1) immediately
+identifies the stalled hardware unit.
+
+**Stall locator**: `Waiting for End of RESET_PHASE_X marker` lines in testbench.log show
+exactly where the Simics script is blocked. Phase 3-INFRA stall has no marker (commented
+out in script) -- use HWRS stream absence to detect it instead.
+
+**Phase 2 note**: The script syncs die9 before die8 in Phase 2 (reversed vs all other
+phases). A die9 stall in Phase 2 blocks progress before die8 is even checked.
+
+**Emurun options**: Cycle-timing hints in `reset_phase_flow.txt` are only valid when
+`-ver`, `*_tracker_en`, `-xtors`, and `-override_input_dir` match the golden run.
+If any differ, use relative event ordering rather than absolute cycle counts.
 
 ## Stage 6 BIOS Sub-Phase Analysis
 
@@ -191,6 +219,11 @@ point of failure, enabling fast triage without reading thousands of log lines ma
 ### Update the golden execution flow
 1. Replace `.github/skills/hsle-run-debugger/flow.txt` with the updated flow document
 2. Update the Stage checklist in `SKILL.md` if new milestone markers were added
+
+### Update the Stage 5 reset phase reference
+1. Update `.github/skills/hsle-run-debugger/reset_phase_flow.txt` with new golden CSV data
+   (source: `reset_checker_tools/input/{cbb,hwrs,imh-primecode}/coldboot2swr.json` and `*_golden.csv`)
+2. Update Stage 5 grep commands and signature table in `SKILL.md` if new events/states were added
 
 ### Update the BIOS sub-phase reference
 1. Replace `.github/skills/hsle-run-debugger/bios_flow.txt` with the updated BIOS flow
