@@ -1,0 +1,297 @@
+================================================================================
+        DMR MCP ICI HSLE -- RESET CYCLE FLOW REFERENCE
+        =================================================
+  Platform  : MCP 1-Socket, 2 IMH dies (imh8/die8 + imh9/die9), 4 CBB dies
+  Coverage  : CR, WR, GR, AGR, AWR, SWR (button), S5, IP-disable, Surprise
+  Source    : hybrid_reset_handler.simics, reset_entry.simics,
+              os_reset_triggers.simics, agr.simics, awr.simics, swr.simics, s5.simics
+  Reference : GR run: CF9_FAKE_RSP_4000M_BFM_TO__acpi_icecode_global_reset_rio_lock_off.1
+              WR run: max_base_template.32.14   CR run: max_base_template.32.11
+================================================================================
+================================================================================
+QUICK DETECTION: Is this a reset run?
+================================================================================
+
+Run this grep first on any testbench.log:
+  grep -e "RST_TAG" -e "PPR check: GOT RESET" testbench.log | head -80
+
+Key patterns to look for:
+  PPR check: GOT RESET CF9 6    -> Warm Reset (WR) detected via CF9
+  PPR check: GOT RESET CF9 14   -> Cold or Global Reset detected via CF9
+  RST_TAG HSLE starting reset procedures -> HSLE handled a reset (one per event)
+  RST_TAG AGR event triggered    -> Asynchronous Global Reset (platform-AGR)
+  RST_TAG AWR event triggered    -> Asynchronous Warm Reset (platform-AWR)
+  RST_TAG Reset_BTN event triggered -> Reset Button press (platform-SWR)
+  RST_TAG triggering S5 flow     -> S5 shutdown scenario
+
+Count total resets:
+  grep "RST_TAG HSLE starting reset procedures" testbench.log | wc -l
+  -> Each occurrence = one reset cycle handled by HSLE
+
+Show all reset entry events (type + timing):
+  grep -e "Inform RST_TAG: Running" -e "PPR check: GOT RESET" testbench.log
+
+================================================================================
+RESET TYPES CATALOG
+================================================================================
+
+ Type      | CF9 val | Trigger source        | Key log signature
+-----------+---------+-----------------------+--------------------------------------------
+ Cold (CR) | 0xE(14) | OS reboot cold        | RST_TAG: COLD_RESET through OS reboot triggered
+           |         | Solar cold            | RST_TAG: COLD_RESET through SOLAR triggered
+ Warm (WR) | 0x6 (6) | OS reboot warm        | RST_TAG: WARM_RESET through OS reboot triggered
+           |         | Solar warm            | RST_TAG: WARM_RESET through SOLAR triggered
+ Global(GR)| 0xE(14) | CF9 + ETR3 GR bit     | RST_TAG Global reset sequence will be called
+           |         | Solar global          | RST_TAG: GLOBAL_RESET through SOLAR triggered
+ AGR       | N/A     | platform-AGR (async)  | RST_TAG AGR event triggered
+ AWR       | N/A     | platform-AWR (async)  | RST_TAG AWR event triggered
+ SWR (btn) | N/A     | platform-SWR (button) | RST_TAG Reset_BTN event triggered
+ S5        | N/A     | Solar S5 / OS shutdown| RST_TAG triggering S5 flow
+ IP-disable| varies  | BIOS-triggered reset  | Reset occurs before first PPR_TEST_DONE
+ Surprise  | N/A     | AWR without OS        | RST_TAG AWR event detected, no CF9 line
+
+NOTE: Cold vs Global via CF9 distinction:
+  CF9=0xE, ETR3 GR bit(bit20)=0  -> Cold Reset -> RST_TAG Cold reset sequence will be called
+  CF9=0xE, ETR3 GR bit(bit20)=1  -> Global Reset -> RST_TAG Global reset sequence will be called
+  Both show: PPR check: GOT RESET CF9 14 -- look at next RST_TAG line for distinction.
+
+================================================================================
+RESET LOG SIGNATURES (what to grep for each reset type)
+================================================================================
+
+--- TRIGGER PHASE (OS/Platform side) ---
+
+Cold Reset (reboot-cold):
+  RST_TAG: triggering reboot-cold
+  RST_TAG: COLD_RESET through OS reboot triggered
+  RST_TAG: waiting reset trigger for reboot
+
+Warm Reset (reboot-warm):
+  RST_TAG: triggering reboot-warm
+  RST_TAG: WARM_RESET through OS reboot triggered
+  RST_TAG: waiting reset trigger for reboot
+
+Global Reset (solar-global):
+  RST_TAG: GLOBAL_RESET through SOLAR triggered
+
+Platform AGR:
+  RST_TAG AGR event triggered      <- from os_reset_triggers.simics
+  RST_TAG: AGR triggered           <- follow-up
+
+Platform AWR:
+  RST_TAG AWR event triggered
+  RST_TAG: AWR triggered
+
+Platform SWR (button):
+  RST_TAG Reset_BTN event triggered
+  RST_TAG: SWR triggered
+
+S5 (shutdown):
+  RST_TAG triggering S5 flow       <- from hsle.simics S5 handler
+  RST_TAG SLP requested to S3M     <- S3M receives SLP signal
+
+IP Disable (BIOS-triggered):
+  No pre-trigger RST_TAG (no OS involvement yet).
+  Identified by: RST_TAG HSLE starting reset procedures appears BEFORE PPR_TEST_DONE.
+
+--- HSLE DETECTION AND ENTRY (hybrid_reset_handler.simics) ---
+
+[PPR] Reset type 14  (or 6)              <- CF9 write detected in S3M IO space
+[PPR] cf9 iotrap count 1
+[PPR] cf9 iotrap count 2                 <- threshold reached -> reset confirmed
+PPR check: GOT RESET CF9 14 (0xe)  OR  PPR check: GOT RESET CF9 6
+RST_TAG HSLE starting reset procedures   <- *** ONE PER RESET CYCLE ***
+
+Reset type determination:
+  RST_TAG Cold reset sequence will be called    <- CF9=0xE, ETR3 GR bit=0
+  RST_TAG Warm reset sequence will be called    <- CF9=0x6
+  RST_TAG Global reset sequence will be called  <- CF9=0xE, ETR3 GR bit=1
+  RST_TAG AGR sequence will be called           <- async, platform-AGR
+  RST_TAG AWR sequence will be called           <- async, platform-AWR, surprise=1
+  RST_TAG Reset event detected --> RST_BUTTON_PRESS  <- SWR (button)
+
+[PPR] Switch to RTL Cores
+[PPR] >>>>>>>> IDI hybrid primary disabled <<<<<<<<
+[PPR] Calling reset entry scripts
+[reset_entry.simics] RST_TAG Creating a CBB event for reset: WARM/COLD/GLOBAL
+[cycle] [HH:MM:SS] - Inform RST_TAG: Running WARM/COLD/GLOBAL reset --> Delay: 2 --> Event_ID: 1001
+[PPR] Calling reset exit scripts
+
+--- HW RESET SIGNALING (reset_entry_hw.simics) ---
+
+Common:
+  RST_TAG waiting for PLTRST_SYNC
+  RST_TAG waiting for HWRS primary to report RESET_COMPLETE
+  RST_TAG CORE disabled
+
+Warm Reset specific:
+  RST_TAG PLTRST requested to platform
+  RST_TAG Released All signals
+  RST_TAG XX_RESET_N asserted
+  RST_TAG Reset triggered
+
+Cold Reset specific:
+  RST_TAG PLTRST requested to platform
+  RST_TAG End of wait SLP signals = 0
+  RST_TAG set XX_PWRGOOD to 0
+  RST_TAG De-asserting S0_PWR_OK
+  RST_TAG Reset triggered
+
+Global Reset specific (GR/AGR):
+  RST_TAG Activating Fake GO RSP W/A in IDI xtor
+  [GLB_RST] RST_TAG Forced GLOBAL_RESET_N to 0
+  [GLB_RST] RST_TAG SLP_S5/S4/S3 goes to 0
+  RST_TAG Deactivating Fake GO RSP W/A in IDI xtor
+  RST_TAG Released All signals
+  RST_TAG Reset triggered
+
+  RST_TAG sequencer_log: SLP_S5 Asserted
+  RST_TAG sequencer_log: SLP_S4 Asserted
+  RST_TAG sequencer_log: SLP_S3 Asserted
+
+--- PRIMECODE RELOAD + BIOS RE-ENTRY ---
+
+  RST_TAG begin reset flow received in imh8 waiting to reload primecode
+  RST_TAG begin reset flow received in imh9 waiting to reload primecode
+  RST_TAG setting BIOS Scratchpad   (x2 - once per IMH die)
+  RST_TAG waiting for BIOS first fetch
+  RST_TAG BIOS complete and test load done. Breaking loop in spi_stor.simics
+  RST_TAG doing the procedure for core switch
+  RST_TAG waiting for HWRS primary to report RESET_COMPLETE during reset exit
+
+After this: RTL reset phases (Stage 5) run again -> BIOS re-boots -> OS re-boots.
+WARM: BOOT_FSM stream shows Inform WARM | N - ... (N = reset count, 1-indexed)
+COLD/GLOBAL: BOOT_FSM stream shows Inform COLD | N - ... (N >= 1)
+
+================================================================================
+MULTI-RESET CYCLE TIMELINE
+================================================================================
+
+COLD BOOT #0 (N=0):
+  Stage 5: Inform COLD | 0 - phases 0 through 6
+  Stage 6: BIOS boot #0
+  Stage 7: OS boot #0 -> PPR_TEST_DONE #0
+  (reset triggered by post-setup script after PPR_TEST_DONE)
+
+RESET #1 (example: WR):
+  RST_TAG: WARM_RESET through OS reboot triggered
+  PPR check: GOT RESET CF9 6
+  RST_TAG HSLE starting reset procedures
+  RST_TAG Warm reset sequence will be called
+  [cycle] [time] - Inform RST_TAG: Running WARM reset --> Delay: 2 --> Event_ID: 1001
+  RST_TAG Reset triggered
+  RST_TAG begin reset flow received in imh8/imh9...
+
+BOOT #1 (post-WR):
+  Stage 5: Inform WARM | 1 - phases 0 through 3 (warm path)
+  Stage 6: BIOS boot #1
+  Stage 7: OS boot #1 -> PPR_TEST_DONE #1
+  (if more resets configured, next reset triggers here)
+
+Count by reset type:
+  grep "Warm reset sequence will be called" testbench.log | wc -l
+  grep "Cold reset sequence will be called" testbench.log | wc -l
+  grep "Global reset sequence will be called" testbench.log | wc -l
+  grep "RST_TAG AGR event detected" testbench.log | wc -l
+  grep "RST_TAG AWR event detected" testbench.log | wc -l
+  grep "RST_BTN event detected" testbench.log | wc -l
+
+================================================================================
+IP DISABLE SCENARIO (BIOS-triggered reset before OS)
+================================================================================
+
+In this scenario, BIOS triggers a reset DURING the BIOS boot phase (Stage 6),
+before the OS ever boots. Used to test IP disable code paths.
+
+IDENTIFICATION:
+  PPR_TEST_DONE does NOT appear before RST_TAG HSLE starting reset procedures
+  Reset markers appear after IDI Mux enabled but before Linux version
+  BIOS partially executes (some serconsole output) then CF9 write detected
+
+EXAMPLE SEQUENCE:
+  [hsle.simics] IDI Mux enabled      <- Stage 6 started
+  EarlyPlatformPchInit               <- BIOS started (6.1)
+  ... (some BIOS output) ...
+  PPR check: GOT RESET CF9 6         <- BIOS triggered CF9 write
+  RST_TAG HSLE starting reset procedures
+  ... (reset cycle) ...
+  [hsle.simics] IDI Mux enabled      <- Stage 6 second run
+  EarlyPlatformPchInit               <- BIOS re-runs
+
+KEY DISTINCTION:
+  Normal reset: PPR_TEST_DONE appears -> THEN reset triggers.
+  IP-disable:   No PPR_TEST_DONE before the first reset.
+
+GREP TO DETECT IP DISABLE:
+  # If first hit is RST_TAG HSLE -> IP disable scenario
+  grep -n "PPR_TEST_DONE" testbench.log | head -3
+  grep -n "RST_TAG HSLE starting reset procedures" testbench.log | head -3
+
+================================================================================
+SURPRISE RESET (AWR without OS cooperation)
+================================================================================
+
+AWR (Asynchronous Warm Reset) can be triggered without OS involvement.
+hybrid_reset_handler_awr.simics sets: surprise_warm_reset=1, async_reset=TRUE.
+Reset is driven purely by asserting XX_RESET_N in RTL.
+
+LOG SIGNATURE (no PPR check: GOT RESET CF9 line):
+  RST_TAG AWR event triggered
+  RST_TAG AWR event detected
+  RST_TAG HSLE starting reset procedures
+  RST_TAG XX_RESET_N asserted        <- physical reset asserted
+  RST_TAG Reset triggered
+  (no PPR check: GOT RESET CF9 line -- no CF9 write by OS)
+
+================================================================================
+RESET CYCLE FAILURE ANALYSIS
+================================================================================
+
+ Failure symptom                         | Root cause / What to check
+-----------------------------------------+---------------------------------------------
+ No RST_TAG HSLE starting after trigger  | CF9 not detected. Check iotrap setup,
+                                         | S3M IO space, hybrid_reset_handler reg
+ No RST_TAG Reset triggered after        | HW reset signal not pulsed.
+ RST_TAG CORE disabled                   | Check reset_entry_hw.simics signals
+ No RST_TAG begin reset flow after       | IMH did not respond to reset.
+ RST_TAG Reset triggered                 | Check HWRS RESET_COMPLETE, primecode
+ No IDI Mux enabled after 2nd            | Post-reset RTL phases stalled.
+ RST_TAG begin reset flow                | Check Stage 5 debug (BOOT_FSM, HWRS).
+                                         | WARM path: check BOOT_FSM_IS_DOWN.
+ No EarlyPlatformPchInit after 2nd       | BIOS not started. Check bios_fetchor_
+ IDI Mux enabled                         | control, debug_port 0x0001.
+ Hang at RST_TAG waiting for HWRS        | HWRS_RESET_COMPLETE never emitted.
+ primary report RESET_COMPLETE           | Check HWRS stream, IMH die symmetry.
+ AGR/AWR event triggered but no detected | Script-branch not watching. Check
+                                         | hybrid_reset_handler_agr/awr branch.
+ Hang at Waiting for SLP_S3/S4/S5 go 0  | GR signal deassertion stall.
+
+For post-reset BIOS/OS failures: apply bios-issue-analyzer (Stage 6) or Stage 7 debug.
+
+================================================================================
+KEY GREP COMMANDS FOR RESET ANALYSIS
+================================================================================
+
+TBLOG=path/to/testbench.log   (use zgrep/zcat if .gz)
+
+# --- QUICK OVERVIEW: all resets in the run ---
+
+# --- Count total reset cycles ---
+
+# --- Find each reset type ---
+
+# --- Show CBB event markers (type + timing for each reset) ---
+
+# --- GR: verify SLP signals and GLOBAL_RESET_N ---
+
+# --- IP Disable: check if reset precedes first PPR_TEST_DONE ---
+
+# --- Show full reset timeline ---
+
+# --- Post-reset BOOT_FSM path (WARM vs COLD) ---
+  # WARM reset MUST show BOOT_FSM_IS_DOWN before Starting phase1 in warm cycle
+
+================================================================================
+END OF RESET FLOW DOCUMENT
+================================================================================
+

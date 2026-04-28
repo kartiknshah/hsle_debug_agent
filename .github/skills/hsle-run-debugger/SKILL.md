@@ -102,6 +102,14 @@ grep "PPR_TEST_DONE" <run_dir>/testbench.log | head -1
 # or for gzipped: zgrep "PPR_TEST_DONE" <run_dir>/testbench.log.gz | head -1
 ```
 
+
+```bash
+# Detect reset runs: non-zero count = run includes post-boot reset cycles
+grep -c "RST_TAG HSLE starting reset procedures" <run_dir>/testbench.log
+```
+
+If resets are present, also load `reset_flow.txt` alongside this skill for Stage 8.5 guidance.
+
 If testbench.log is gzipped, use `zgrep` and `zcat` instead of `grep` and `cat` in all
 subsequent steps.
 
@@ -126,7 +134,7 @@ Run the master milestone grep. This single command captures markers for all 9 st
 ```bash
 TBLOG="<run_dir>/testbench.log"
 
-grep -n "RTI:\|RESET_PHASE\|hsle.simics\|IDI Mux\|Hybrid Core\|UCLK\|Waiting for RTL\|FW_BYPASS\|pdisable\|penable\|fuse_load\|primecode\.py\|mem_load\|Mounted\|Pre Mount\|sle.simics.*Project\|sle.simics.*determine_model\|sle.simics.*Running\|ACED\|DEAD\|HANG\|SHUTDOWN\|bootstrap_timeout\|reached cycle limit\|end_of_run\|Linux version\|Kernel command line\|ExitBootServices\|serconsole.*GRUB\|centos_post\|svos_post\|PPR_auto_exit\|PPR_TEST_DONE\|Auto exit script\|Error\|ERROR\|FATAL\|Exception\|Traceback\|quit.*Simics" "$TBLOG" | head -120
+grep -n "RTI:\|RESET_PHASE\|hsle.simics\|IDI Mux\|Hybrid Core\|UCLK\|Waiting for RTL\|FW_BYPASS\|pdisable\|penable\|fuse_load\|primecode\.py\|mem_load\|Mounted\|Pre Mount\|sle.simics.*Project\|sle.simics.*determine_model\|sle.simics.*Running\|ACED\|DEAD\|HANG\|SHUTDOWN\|bootstrap_timeout\|reached cycle limit\|end_of_run\|Linux version\|Kernel command line\|ExitBootServices\|serconsole.*GRUB\|centos_post\|svos_post\|PPR_auto_exit\|PPR_TEST_DONE\|Auto exit script\|Error\|ERROR\|FATAL\|Exception\|Traceback\|quit.*Simics\|RST_TAG\|PPR check: GOT RESET\|Inform RST_TAG: Running" "$TBLOG" | head -150
 ```
 
 ---
@@ -347,6 +355,37 @@ typically have `test_result: -1` and **no `results.log`** — this is normal and
 > If `PPR_TEST_DONE` is present AND `Auto exit script: exiting` follows it, the run is a
 > **PASS** regardless of `test_result: -1` or missing `results.log`.
 
+#### STAGE 8.5: Reset Cycle (runs with one or more post-OS resets)
+
+Some runs perform one or more reset cycles AFTER the initial OS boot, to test reset
+handling or IP-disable code paths. When resets are present, Stage 8.5 repeats Stages
+5-7 for each reset cycle before reaching a final Stage 8 pass/fail.
+
+**Quick detection**:
+```bash
+grep -c "RST_TAG HSLE starting reset procedures" "$TBLOG"
+# Non-zero -> reset run. Then:
+grep -e RST_TAG -e "PPR check: GOT RESET" "$TBLOG"
+```
+
+| Marker | Grep pattern | Indicates |
+|--------|-------------|-----------|
+| Reset triggered (CF9-based) | `PPR check: GOT RESET CF9 6` (WR) / `CF9 14` (CR/GR) | OS wrote CF9 reset register |
+| Reset triggered (async) | `RST_TAG AGR event detected` / `RST_TAG AWR event detected` | Platform AGR/AWR signal fired |
+| HSLE started reset | `RST_TAG HSLE starting reset procedures` | Simics reset handler took control |
+| Reset type chosen | `RST_TAG Warm/Cold/Global reset sequence will be called` | Reset classification done |
+| CBB event logged | `Inform RST_TAG: Running WARM/COLD/GLOBAL reset` | CBB event marker (shows cycle+time) |
+| HW reset pulsed | `RST_TAG Reset triggered` | Physical XX_RESET_N/PLTRST asserted |
+| RTL received reset | `RST_TAG begin reset flow received` (imh8/imh9) | RTL reset in progress |
+| Post-reset Stage 5 | `Inform WARM|COLD \| N` (N=1,2...) | Second boot cycle in RTL reset phases |
+| Post-reset pass | `PPR_TEST_DONE` (second occurrence) | Reset cycle passed |
+
+> **When Stage 8.5 is the failing stage** (reset triggered but run hangs/dies afterward):
+> Load **`reset_flow.txt`** for the complete reset type catalog, log signatures, and
+> failure analysis table. Then drill into the specific post-reset stage that failed
+> (Stage 5/6/7 for the second boot cycle), using the same checklists above.
+
+
 ---
 
 ### Step 4 — Drill Down into Failure Zone
@@ -465,6 +504,34 @@ grep -n "Traceback\|Exception\|Error" "$TBLOG" | head -20
 # Check for missing files
 grep -i "not found\|No such file\|does not exist\|FileNotFoundError" "$TBLOG" | head -10
 ```
+
+#### For reset cycle failures (Stage 8.5):
+
+> **Read `reset_flow.txt` first** for the complete reset type catalog and HW signal reference.
+
+```bash
+# Step A: Confirm reset detected and classify type
+grep -n "RST_TAG HSLE starting\|RST_TAG.*reset sequence\|PPR check: GOT RESET" "$TBLOG"
+
+# Step B: Check the CBB event markers (cycle + timestamp for each reset)
+grep "Inform RST_TAG: Running" "$TBLOG"
+
+# Step C: Verify HW reset signaling happened
+grep "RST_TAG Reset triggered\|RST_TAG XX_RESET_N\|RST_TAG PLTRST\|RST_TAG begin reset flow" "$TBLOG"
+
+# Step D: Check Global Reset SLP signals (GR only)
+grep "Forced GLOBAL_RESET_N\|SLP_S5 Asserted\|GLB_RST" "$TBLOG"
+
+# Step E: Check post-reset Stage 5 started (WARM vs COLD path)
+grep "Inform WARM\|Inform COLD\|BOOT_FSM_IS_DOWN" "$TBLOG" | head -20
+
+# Step F: IP disable check -- did reset happen before first PPR_TEST_DONE?
+grep -n "PPR_TEST_DONE" "$TBLOG" | head -3
+grep -n "RST_TAG HSLE starting reset procedures" "$TBLOG" | head -3
+# If RST_TAG line number < first PPR_TEST_DONE line number -> IP disable scenario
+```
+
+For post-reset BIOS/OS failures apply the Stage 5, 6, or 7 checklists to the second boot cycle.
 
 ---
 

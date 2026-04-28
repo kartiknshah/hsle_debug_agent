@@ -34,6 +34,7 @@ Never debug from memory — always follow the skill's step-by-step procedure.
 | Stage 6 (BIOS boot) or Stage 7 (OS boot) failure identified in an HSLE run | `#skill:bios-issue-analyzer` (after hsle-run-debugger) |
 | User asks to decode BIOS errors (EWL, IPSD, RC Fatal, assertions, POST codes) from any log | `#skill:bios-issue-analyzer` |
 | User asks "what does EWL 0x../0x.. mean?" or "decode PC-XX" or "decode post code" | `#skill:bios-issue-analyzer` |
+| RST_TAG markers detected in testbench.log, or user mentions reset/reboot/IP-disable | `#skill:hsle-run-debugger` + load `reset_flow.txt` for Stage 8.5 guidance |
 
 ---
 

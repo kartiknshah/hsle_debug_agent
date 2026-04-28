@@ -653,6 +653,64 @@ STAGE 8: TEST TERMINATION
     cat test/results.log                          <- Path A result file
 
 
+
+===============================================================================
+STAGE 8.5: RESET CYCLE (runs with post-OS resets)
+===============================================================================
+
+  Some runs perform one or more reset cycles AFTER Stage 7 (initial OS boot).
+  After the reset, the emulation re-executes Stages 5-7 for the new boot cycle.
+  The full pattern is: COLD BOOT #0 --> PPR_TEST_DONE #0 --> RESET #1 --> BOOT #1 --> ...
+
+  RESET TRIGGER SEQUENCE (CF9-based, example: Warm Reset):
+   |
+   |-- OS triggers CF9 write (CF9=0x6 for WR, CF9=0xE for CR/GR)
+   |     Log: "PPR check: GOT RESET CF9 6" (WR) / "CF9 14" (CR/GR)
+   |     Log: "RST_TAG: WARM_RESET through OS reboot triggered"
+   |
+   |-- hybrid_reset_handler.simics detects CF9 write
+   |     Log: "RST_TAG HSLE starting reset procedures"
+   |     Log: "RST_TAG Warm/Cold/Global reset sequence will be called"
+   |
+   |-- reset_entry.simics creates CBB event
+   |     CBB: "Inform RST_TAG: Running WARM reset --> Delay: 2 --> Event_ID: 1001"
+   |
+   |-- reset_entry_hw.simics pulses physical reset signals
+   |     Log: "RST_TAG Reset triggered"
+   |     WR:  PLTRST_N deasserted/asserted, XX_RESET_N pulsed
+   |     CR:  Same as WR + full cold boot signal set
+   |     GR:  GLOBAL_RESET_N forced to 0, SLP_S5/S4/S3 asserted/deasserted
+   |
+   |-- RTL receives reset
+   |     Log: "RST_TAG begin reset flow received in imh8 / imh9"
+   |
+   +-- Post-reset Stage 5 begins (WARM or COLD RTL path):
+         CBB BOOT_FSM: "Inform WARM | 1 - ..."  (N=boot cycle number)
+         WARM path: requires BOOT_FSM_IS_DOWN before phase1
+         Then Stages 6 and 7 repeat for boot cycle #1
+
+  ASYNC RESET TRIGGER SEQUENCE (AGR / AWR / SWR / S5):
+   |
+   |-- Platform event fires (no CF9 write from OS)
+   |     AGR: "RST_TAG AGR event triggered" -> "RST_TAG AGR event detected"
+   |     AWR: "RST_TAG AWR event triggered" -> "RST_TAG AWR event detected"
+   |     SWR: "RST_TAG Reset_BTN event triggered" -> "RST_BTN event detected"
+   |     S5:  "RST_TAG triggering S5 flow" -> "RST_TAG SLP requested to S3M"
+   |
+   +-- Continues as above from "RST_TAG HSLE starting reset procedures"
+
+  IP DISABLE SCENARIO (reset before first OS boot):
+     BIOS triggers reset during Stage 6 (before PPR_TEST_DONE #0)
+     RST_TAG line number < first PPR_TEST_DONE line number in log
+
+  KEY GREP for Stage 8.5 detection:
+    grep -c "RST_TAG HSLE starting reset procedures" testbench.log  <- count resets
+    grep "Inform RST_TAG: Running" testbench.log                   <- CBB events
+    grep "RST_TAG.*reset sequence" testbench.log                   <- type per cycle
+
+  See reset_flow.txt for complete reset type catalog, HW signal details, and failure analysis.
+
+
 ===============================================================================
 FILE DEPENDENCY SUMMARY (Execution Order)
 ===============================================================================
