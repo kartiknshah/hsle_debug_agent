@@ -1,0 +1,560 @@
+================================================================================
+              DMR MCP ICI HSLE -- GLOBAL RESET EXECUTION FLOW
+              ================================================
+  Model     : ZSE5_DMR_MCP_1S_ICI_FULLSTACK_HSLE (M6a, ZeBu ZSE5 emulation)
+  Config    : MCP 1-Socket ICI, 2 IMH dies (imh8 + imh9), 4 CBB dies
+  Reference : CF9_FAKE_RSP_4000M_BFM_TO__acpi_icecode_global_reset_rio_lock_off.1
+  Post-setup: test/svos_post.simics + os_cold_reboot_trigger.simics
+  Trigger   : SVOS Global Reset (ACPI CF9 write with gbl_etr3=1)
+  Result    : PPR_TEST_DONE x2 (no results.log)   Total Log Lines: 450182
+================================================================================
+
+  OVERVIEW
+  --------
+  This file documents the GLOBAL RESET execution flow for HSLE runs.
+  A global reset is the most comprehensive reset type -- it resets ALL silicon
+  including fuses, power rails, and all die logic (like cold), PLUS it asserts
+  GLOBAL_RESET_N and waits for GBL_RST_WARN (unlike cold which uses PLTRST_SYNC).
+
+  STAGES 0-7 are identical to flow.txt (first cold boot through first OS/PPR pass).
+  Reset-specific stages start at STAGE 8.
+
+  FIRST COLD BOOT      : STAGES 0-7   (see flow.txt -- identical)
+  RESET TRIGGER        : STAGE 8      (SVOS Global Reset / ACPI CF9 + ETR3)
+  RESET HARDWARE ENTRY : STAGE 9      (GBL_RST_WARN, GLOBAL_RESET_N, full power cycle)
+  SECOND BOOT RTL      : STAGE 10     (primecode reload + HWRS + IceCode reload)
+  SECOND BIOS BOOT     : STAGE 11     (VP hybrid switch + full BIOS POST)
+  SECOND OS BOOT       : STAGE 12     (SVOS second boot + PPR_TEST_DONE)
+  TEST TERMINATION     : STAGE 13     (PPR_TEST_DONE x2 or timeout)
+
+  GLOBAL RESET TYPE DETECTION:
+  CF9 register write 0x06 + gbl_etr3 == 1  -->  global_reset=1 (GLOBAL)
+  NOTE: CF9 value is 0x06 (same as warm!) but gbl_etr3 bit distinguishes it.
+  The PPR trap fires TWICE: first cf9 iotrap count=1, then count=2 triggers reset.
+
+  GLOBAL vs COLD vs WARM COMPARISON:
+  +------------------------------+----------+----------+----------+
+  | Feature                      | COLD     | WARM     | GLOBAL   |
+  +------------------------------+----------+----------+----------+
+  | CF9 value                    | 0x0E     | 0x06     | 0x06     |
+  | gbl_etr3                     | 0        | 0        | 1        |
+  | PLTRST_SYNC wait             | YES      | YES      | NO       |
+  | GBL_RST_WARN wait            | NO       | NO       | YES      |
+  | GLOBAL_RESET_N asserted      | NO       | NO       | YES      |
+  | SLP_S5/S4/S3 asserted        | YES      | NO       | YES      |
+  | XX_PWRGOOD de-asserted       | YES      | NO       | YES      |
+  | S0_PWR_OK de-asserted        | YES      | NO       | YES      |
+  | Fuse reload                  | YES      | NO       | YES      |
+  | IceCode reload               | YES(cold)| NO       | YES(GLOBAL)|
+  | Fake GO RSP W/A              | NO       | NO       | YES      |
+  | Full BIOS POST on 2nd boot   | YES      | Partial  | YES      |
+  +------------------------------+----------+----------+----------+
+
+================================================================================
+  STAGES 0-7:  FIRST COLD BOOT  (identical to flow.txt)
+================================================================================
+
+  Refer to flow.txt for full milestone detail of Stages 0-7.
+  For global reset runs, verify ALL Stage 0-7 milestones pass before checking reset.
+
+  QUICK CHECKLIST -- first boot milestones (grep testbench.log):
+  [ ] STAGE 0: spark_session.log loaded, ZeBu configured
+  [ ] STAGE 1: emu_log / ZSE5 device init complete
+  [ ] STAGE 2: Model init, IDI VP-RTL links connected
+  [ ] STAGE 3: ZeBu hardware compilation complete
+  [ ] STAGE 4: Simics run started, VP processors created
+  [ ] STAGE 5: RESET_PHASE_1 through RESET_PHASE_6 all observed (IMH+CBB)
+  [ ] STAGE 6: BIOS boot complete (BIOS_TAIL_ACED_FFFFFF00 or ExitBootServices)
+  [ ] STAGE 7: First OS boot -- PPR_TEST_DONE or SVOS login
+
+  If ANY Stage 0-7 milestone is missing, treat as normal cold boot failure
+  per flow.txt -- do NOT proceed to reset stage analysis.
+
+================================================================================
+  STAGE 8:  GLOBAL RESET TRIGGER
+================================================================================
+
+  Entry condition: First PPR_TEST_DONE observed + SVOS test complete.
+  The svos_post.simics script waits for SVOS to finish, then
+  os_cold_reboot_trigger.simics sets up the next PPR_TEST_DONE wait.
+  The SVOS ACPI global reset test writes CF9 with gbl_etr3=1.
+
+  8.0  FIRST BOOT COMPLETION MARKER
+  |-- KEY GREP: PPR_TEST_DONE
+  |     Stream  : emu.devices
+  |     Example : [emu.devices info] PPR_TEST_DONE
+  |     Notes   : First occurrence signals first boot pass.
+  +-- REFERENCE LINE: ~376134
+
+  8.1  SVOS GLOBAL RESET TRIGGER
+  |-- KEY GREP: SVOS Global Reset
+  |     Stream  : emu.devices
+  |     Example : [emu.devices info] SVOS Global Reset
+  |     Notes   : SVOS ACPI test module initiates global reset.
+  |               This is the application-level trigger; CF9 writes follow.
+  +-- REFERENCE LINE: ~376420
+
+  8.2  CF9 REGISTER WRITE (FIRST)
+  |-- KEY GREP: IO: 0x0000000000000CF9 <- 06
+  |     Stream  : io_space info
+  |     Example : IO: 0x0000000000000CF9 <- 06
+  |     Notes   : First CF9 write; PPR trap fires with count=1.
+  |               CF9 value 0x06 same as warm -- gbl_etr3 bit distinguishes.
+  +-- REFERENCE LINE: ~376449
+
+  8.3  CF9 REGISTER WRITE (SECOND) + RESET DETECTED
+  |-- KEY GREP: PPR check: GOT RESET CF9 6
+  |     Stream  : emu.devices
+  |     Example : [PPR] cf9 iotrap count 2
+  |               PPR check: GOT RESET CF9 6
+  |     Notes   : Second CF9 write triggers actual reset. cf9 iotrap count=2.
+  +-- REFERENCE LINE: ~376458
+
+  STAGE 8 FAILURE SIGNATURES:
+  - Missing SVOS Global Reset after PPR_TEST_DONE:
+    SVOS ACPI test did not execute; check svos_post.simics and SVOS test config.
+  - CF9 write 0x06 but no GOT RESET CF9:
+    Only one CF9 write occurred; PPR trap needs count=2 to trigger.
+  - CF9 write seen but RST_TAG HSLE starting reset procedures never follows:
+    hybrid_reset_handler.simics did not classify as global; check gbl_etr3 bit.
+
+================================================================================
+  STAGE 9:  GLOBAL RESET HARDWARE ENTRY
+================================================================================
+
+  Global reset uses GBL_RST_WARN (not PLTRST_SYNC like cold/warm).
+  It asserts GLOBAL_RESET_N, de-asserts all power signals, reloads fuses.
+  The Fake GO RSP W/A is activated for global reset only.
+
+  9.0  HSLE RESET PROCEDURES START
+  |-- KEY GREP: RST_TAG HSLE starting reset procedures
+  |     Stream  : emu.devices
+  |     Example : RST_TAG HSLE starting reset procedures
+  +-- REFERENCE LINE: ~376459
+
+  9.1  GLOBAL RESET SEQUENCE CALLED
+  |-- KEY GREP: RST_TAG Global reset sequence will be called
+  |     Stream  : emu.devices
+  |     Example : RST_TAG Global reset sequence will be called
+  |     Notes   : Confirms global (not cold/warm) path selected.
+  +-- REFERENCE LINE: ~376466
+
+  9.2  FAKE GO RSP W/A ACTIVATED
+  |-- KEY GREP: RST_TAG Activating Fake GO RSP W/A
+  |     Stream  : emu.devices
+  |     Example : RST_TAG Activating Fake GO RSP W/A in IDI xtor
+  |     Notes   : Global-reset-only workaround for IDI xtor.
+  +-- REFERENCE LINE: ~376467
+
+  9.3  IDI HYBRID PRIMARY DISABLED
+  |-- KEY GREP: IDI hybrid primary disabled
+  |     Stream  : emu.devices
+  |     Example : [PPR] >>>>>>>>>> IDI hybrid primary disabled <<<<<<<<
+  +-- REFERENCE LINE: ~376464
+
+  9.4  CBB RESET EVENT CREATION
+  |-- KEY GREP: RST_TAG Creating a CBB event for reset: GLOBAL
+  |     Stream  : emu.devices
+  |     Example : [reset_entry.simics] RST_TAG Creating a CBB event for reset: GLOBAL
+  +-- REFERENCE LINE: ~376470
+
+  9.5  CBB RESET EVENT INFORM
+  |-- KEY GREP: Inform RST_TAG: Running GLOBAL reset.*Event_ID
+  |     Stream  : emu.devices
+  |     Example : Inform RST_TAG: Running GLOBAL reset --> Delay: 2 --> Event_ID: 1001
+  +-- REFERENCE LINE: ~376471
+
+  9.6  GBL_RST_WARN WAIT  (global-specific -- replaces PLTRST_SYNC)
+  |-- KEY GREP: RST_TAG waiting for GBL_RST_WARN
+  |     Stream  : emu.devices
+  |     Example : RST_TAG waiting for GBL_RST_WARN
+  |     Notes   : Global reset waits for GBL_RST_WARN_N to go to 0.
+  |               Cold/warm use PLTRST_SYNC instead.  This is a key differentiator.
+  +-- REFERENCE LINE: ~376481
+
+  9.7  XX_PWRGOOD DE-ASSERTION
+  |-- KEY GREP: RST_TAG set XX_PWRGOOD to 0
+  |     Stream  : emu.devices
+  |     Example : RST_TAG set XX_PWRGOOD to 0
+  +-- REFERENCE LINE: ~376770
+
+  9.8  S0_PWR_OK DE-ASSERTION
+  |-- KEY GREP: RST_TAG De-asserting S0_PWR_OK
+  |     Stream  : emu.devices
+  |     Example : RST_TAG De-asserting S0_PWR_OK
+  +-- REFERENCE LINE: ~377871
+
+  9.9  FORCED RESET_N, PWRGOOD, PWR_OK TO 0
+  |-- KEY GREP: RST_TAG Forced XX_RESET_N, XX_PWRGOOD and PWR_OK to 0
+  |     Stream  : emu.engine
+  |     Example : RST_TAG Forced XX_RESET_N, XX_PWRGOOD and PWR_OK to 0
+  +-- REFERENCE LINE: ~377876
+
+  9.10 CORE DISABLED
+  |-- KEY GREP: RST_TAG CORE disabled
+  |     Stream  : emu.devices
+  |     Example : RST_TAG CORE disabled
+  +-- REFERENCE LINE: ~378734
+
+  9.11 GLOBAL_RESET_N FORCED TO 0  (global-specific)
+  |-- KEY GREP: RST_TAG Forced GLOBAL_RESET_N to 0
+  |     Stream  : emu.engine
+  |     Example : [GLB_RST]  RST_TAG Forced GLOBAL_RESET_N to 0
+  |     Notes   : Global-only signal.  Cold uses RESET_N only.  Warm uses RESET_N only.
+  +-- REFERENCE LINE: ~378738
+
+  9.12 WAITING FOR SLP_S3/S4/S5 SIGNALS TO GO TO 0
+  |-- KEY GREP: RST_TAG Waiting for SLP_S3/S4/S5 signals to go to 0
+  |     Stream  : emu.engine
+  |     Example : [GLB_RST]  RST_TAG Waiting for SLP_S3/S4/S5 signals to go to 0
+  +-- REFERENCE LINE: ~378739
+
+  9.13 SLP SIGNAL ASSERTION SEQUENCE
+  |-- KEY GREP: RST_TAG sequencer_log: SLP_S5 Asserted
+  |     Stream  : emu.devices
+  |     Example : RST_TAG sequencer_log: SLP_S5 Asserted !!
+  |               RST_TAG sequencer_log: SLP_S4 Asserted !!
+  |               RST_TAG sequencer_log: SLP_S3 Asserted !!
+  |     Notes   : All three SLP signals must assert in order: S5 -> S4 -> S3.
+  +-- REFERENCE LINE: ~378755, ~378771, ~378787
+
+  9.14 SLP SIGNALS CONFIRMED DOWN
+  |-- KEY GREP: RST_TAG SLP_S5/S4/S3 goes to 0
+  |     Stream  : emu.engine
+  |     Example : [GLB_RST] RST_TAG SLP_S5/S4/S3 goes to 0
+  +-- REFERENCE LINE: ~378788
+
+  9.15 FAKE GO RSP W/A DEACTIVATED
+  |-- KEY GREP: RST_TAG Deactivating Fake GO RSP W/A
+  |     Stream  : emu.devices
+  |     Example : RST_TAG Deactivating Fake GO RSP W/A in IDI xtor
+  +-- REFERENCE LINE: ~378789
+
+  9.16 ALL SIGNALS RELEASED
+  |-- KEY GREP: RST_TAG Released All signals
+  |     Stream  : emu.engine
+  |     Example : RST_TAG Released All signals
+  +-- REFERENCE LINE: ~378791
+
+  9.17 RESET TRIGGERED
+  |-- KEY GREP: RST_TAG Reset triggered
+  |     Stream  : emu.devices
+  |     Example : RST_TAG Reset triggered
+  +-- REFERENCE LINE: ~379121
+
+  9.18 BEGIN_RESET_FLOW MARKER
+  |-- KEY GREP: BEGIN_RESET_FLOW
+  |     Stream  : emu.devices
+  |     Example : BEGIN_RESET_FLOW
+  +-- REFERENCE LINE: ~379157
+
+  9.19 BEGIN RESET FLOW RECEIVED IN IMH DIES
+  |-- KEY GREP: RST_TAG begin reset flow received in imh
+  |     Stream  : emu.devices
+  |     Example : RST_TAG begin reset flow received in imh8 waiting to reload primecode
+  |               RST_TAG begin reset flow received in imh9 waiting to reload primecode
+  |     Notes   : Both IMH dies must receive the reset flow signal.
+  +-- REFERENCE LINE: ~379158, ~379161
+
+  STAGE 9 FAILURE SIGNATURES:
+  - Missing RST_TAG Global reset sequence will be called:
+    hybrid_reset_handler did not classify as global; check gbl_etr3 bit.
+  - Hangs at RST_TAG waiting for GBL_RST_WARN:
+    GBL_RST_WARN_N signal never went to 0; check S3M/HWRS response.
+  - GLOBAL_RESET_N never forced to 0:
+    GLB_RST handler script did not execute; check reset_entry_hw.simics.
+  - SLP_S5/S4/S3 not all asserted:
+    Power sequencing stalled; check which SLP signal is missing.
+  - RST_TAG Reset triggered seen but no BEGIN_RESET_FLOW:
+    RTL did not restart; check ZeBu hardware status.
+  - Only imh8 received begin reset flow, not imh9 (or vice versa):
+    One IMH die hung; check ZeBu hardware error on that die.
+
+================================================================================
+  STAGE 10:  SECOND BOOT RTL PHASES  (primecode + HWRS + IceCode)
+================================================================================
+
+  After PWRGOOD re-assertion, the RTL subsystem runs through primecode states
+  and HWRS sub-phases. Global reset includes fuse reload and IceCode reload.
+  See reset_phase_flow.txt for full RESET_PHASE sub-event detail.
+
+  10.0  IMH PRIMECODE RESTART
+  |-- KEY GREP: imh primecode state CLEAR_HPM_SRAM completed.*0x1
+  |     Stream  : emu.devices
+  |     Example : imh primecode state CLEAR_HPM_SRAM completed for socket 0 die8 (0x1)
+  |               imh primecode state CLEAR_HPM_SRAM completed for socket 0 die9 (0x1)
+  |     Notes   : Both die8 and die9 must start. Second set after line ~379000.
+  +-- REFERENCE LINE: ~383062 (die8), ~383211 (die9)
+
+  10.1  PRIMECODE STATE PROGRESSION
+  |-- KEY GREP: imh primecode state
+  |     Expected: 0x0 -> 0x1 -> 0x2 -> 0x3 -> 0x4 -> 0x5 -> 0x6 -> 0x7 -> 0x8
+  |               -> 0x9 -> 0xa -> 0xb -> 0xc -> 0xd -> 0xe -> 0xf -> 0x10
+  |               (continues through 0x3c = HWRS_RESET_COMPLETE)
+  |     Stream  : emu.devices
+  |     Notes   : Both die8 and die9 must complete all states in parallel.
+  +-- REFERENCE LINE: spread ~383062 - 392191
+
+  10.2  HWRS RESET_PHASE_3 SUB-PHASES
+  |-- KEY GREP: HWRS - RESET_PHASE_3_INFRA is complete
+  |     Stream  : emu.devices
+  |     Example : [dmr_imh_forces.simics] imh 1 sequencer_log: HWRS - RESET_PHASE_3_INFRA is complete
+  |               [dmr_imh_forces.simics] imh 0 sequencer_log: HWRS - RESET_PHASE_3_INFRA is complete
+  |     Notes   : Both imh0 and imh1 must complete. Second set after line ~384000.
+  +-- REFERENCE LINE: ~384603 (imh1), ~384631 (imh0)
+
+  10.3  RESET_PHASE_3_D2D
+  |-- KEY GREP: HWRS - RESET_PHASE_3_D2D is complete
+  |     Stream  : emu.devices
+  |     Example : [dmr_imh_forces.simics] imh 0 sequencer_log: HWRS - RESET_PHASE_3_D2D is complete
+  +-- REFERENCE LINE: ~384893 (imh0), ~384933 (imh1)
+
+  10.4  RESET_PHASE_3_INFRA_CFG (end of phase 3)
+  |-- KEY GREP: HWRS - RESET_PHASE_3_INFRA_CFG is complete.*Reached end of phase 3
+  |     Stream  : emu.devices
+  |     Example : imh 0 sequencer_log: HWRS - RESET_PHASE_3_INFRA_CFG is complete ... Reached end of phase 3
+  +-- REFERENCE LINE: ~386156 (imh0), ~386176 (imh1)
+
+  10.5  BIOS SCRATCHPAD SET
+  |-- KEY GREP: RST_TAG setting BIOS Scratchpad
+  |     Stream  : emu.devices
+  |     Example : RST_TAG setting BIOS Scratchpad
+  |     Notes   : Appears twice (once per IMH die).
+  +-- REFERENCE LINE: ~389714, ~389735
+
+  10.6  ICECODE RELOAD  (global-specific)
+  |-- KEY GREP: icecode_load.*GLOBAL
+  |     Stream  : emu.devices
+  |     Example : simics_util: spawn --> Features.IceCode.icecode_load(args=(GLOBAL, ...))
+  |     Notes   : IceCode is reloaded for global reset (also for cold, NOT for warm).
+  |               This happens during RESET_PHASE_3 (around ResetPhase3.py:55).
+  +-- REFERENCE LINE: ~392314
+
+  10.7  HWRS_RESET_COMPLETE (primecode state 0x3c)
+  |-- KEY GREP: imh primecode state HWRS_RESET_COMPLETE completed
+  |     Stream  : emu.devices
+  |     Example : imh primecode state HWRS_RESET_COMPLETE completed for socket 0 die9 (0x3c)
+  |               imh primecode state HWRS_RESET_COMPLETE completed for socket 0 die8 (0x3c)
+  |     Notes   : Both die8 and die9 must reach 0x3c.
+  +-- REFERENCE LINE: ~392122 (die9), ~392191 (die8)
+
+  10.8  RST_TAG WAITING FOR BIOS FIRST FETCH
+  |-- KEY GREP: RST_TAG waiting for BIOS first fetch
+  |     Stream  : emu.devices
+  |     Example : RST_TAG waiting for BIOS first fetch
+  +-- REFERENCE LINE: ~392133
+
+  STAGE 10 FAILURE SIGNATURES:
+  - imh8 starts primecode but imh9 never appears (or vice versa):
+    One IMH die hung; check for ZeBu hardware error on that die.
+  - Primecode stalls at state 0x10 (APPLY_IP_DISABLES):
+    Firmware/fuse reload issue; check fuse reload and patch memory access.
+  - RESET_PHASE_3_INFRA seen but RESET_PHASE_3_D2D never completes:
+    D2D link (UCIe) initialization failed; check D2D link status.
+  - IceCode reload fails or hangs:
+    Check IceCode Backdoor loading messages; verify IceCode image path.
+  - HWRS_RESET_COMPLETE (0x3c) never reached:
+    RTL infrastructure hang; see reset_phase_flow.txt for sub-phase analysis.
+  - RST_TAG waiting for BIOS first fetch never seen:
+    HWRS_RESET_COMPLETE did not trigger VP handoff; check RESET_PHASE_6/7.
+
+================================================================================
+  STAGE 11:  SECOND BIOS BOOT
+================================================================================
+
+  After HWRS_RESET_COMPLETE, VP processors re-enable and BIOS executes.
+  Global reset triggers FULL BIOS POST (all stages 6.0-6.6), same as cold reset.
+  See bios_flow.txt for BIOS sub-phase detail.
+
+  11.0  BIOS_TAIL_ACED
+  |-- KEY GREP: BIOS_TAIL_ACED_FFFFFF00
+  |     Stream  : emu.devices
+  |     Example : BIOS_TAIL_ACED_FFFFFF00
+  |     Notes   : Second occurrence (first was during first boot Stage 6).
+  +-- REFERENCE LINE: ~393325
+
+  11.1  BIOS COMPLETE AND TEST LOAD DONE
+  |-- KEY GREP: RST_TAG BIOS complete and test load done
+  |     Stream  : emu.devices
+  |     Example : RST_TAG BIOS complete and test load done. Breaking loop in spi_stor.simics
+  +-- REFERENCE LINE: ~393367
+
+  11.2  END OF RESET_PHASE_7  (second boot)
+  |-- KEY GREP: End of RESET_PHASE_7
+  |     Stream  : emu.devices
+  |     Example : [reset_phase_marker.simics] End of RESET_PHASE_7 for socket 0
+  +-- REFERENCE LINE: ~393377
+
+  11.3  CORE SWITCH PROCEDURE
+  |-- KEY GREP: RST_TAG doing the procedure for core switch
+  |     Stream  : emu.devices
+  |     Example : RST_TAG doing the procedure for core switch
+  +-- REFERENCE LINE: ~393394
+
+  STAGE 11 FAILURE SIGNATURES:
+  - BIOS_TAIL_ACED never seen after BIOS first fetch:
+    Check serconsole for BIOS errors; load bios-issue-analyzer skill.
+    Use bios_flow.txt sub-phases to identify failing sub-stage (6.0-6.6).
+  - End of RESET_PHASE_7 missing:
+    BIOS did not complete; check for EWL/IPSD/RC Fatal errors.
+  - Core switch procedure not reached:
+    BIOS completed but VP handoff back failed; check IDI mux state.
+
+================================================================================
+  STAGE 12:  SECOND OS BOOT
+================================================================================
+
+  After second BIOS, the OS boots for the second time.
+
+  12.0  SECOND PPR_TEST_DONE
+  |-- KEY GREP: PPR_TEST_DONE
+  |     Stream  : emu.devices
+  |     Example : [emu.devices info] PPR_TEST_DONE
+  |     Notes   : SECOND occurrence. Count should be 2 for pass.
+  |     Verify  : grep -c PPR_TEST_DONE testbench.log should return 2
+  +-- REFERENCE LINE: ~405850
+
+  STAGE 12 FAILURE SIGNATURES:
+  - Second OS fails to boot (kernel panic, BIOS loops):
+    Treat as Stage 7 failure. Check serconsole for OS error messages.
+  - PPR_TEST_DONE count == 1 only:
+    Second boot did not complete. Check for HANG or timeout after Stage 11.
+
+================================================================================
+  STAGE 13:  TEST TERMINATION
+================================================================================
+
+  After second PPR_TEST_DONE, os_cold_reboot_trigger.simics catches it
+  and the run terminates.
+
+  13.0  RUN TERMINATION
+  |-- Notes   : No explicit RESET_TEST_COMPLETE for this run type.
+  |             os_cold_reboot_trigger.simics catches second PPR_TEST_DONE
+  |             and the ZeBu session winds down (license checkin, monitor writes).
+  |             No results.log is generated.
+
+  13.1  PASS CRITERIA
+  |-- PPR_TEST_DONE count == 2  : PASS
+  |-- PPR_TEST_DONE count == 1  : Second boot failed (check Stage 9-12)
+  |-- PPR_TEST_DONE count == 0  : First boot failed (check Stage 0-7)
+  |-- ZeBu session timeout      : HANG (check last milestone reached)
+
+================================================================================
+  COMPLETE TIMELINE GREP SEQUENCE
+  (for global reset run milestone verification -- ordered by log line number)
+================================================================================
+
+  -- FIRST BOOT (Stages 0-7): same as flow.txt --
+
+  grep -n  PPR_TEST_DONE                     testbench.log   # Stage 7 + Stage 12
+  grep -c  PPR_TEST_DONE                     testbench.log   # should return 2 for pass
+
+  -- STAGE 8: GLOBAL RESET TRIGGER --
+  grep -n  SVOS Global Reset                 testbench.log
+  grep -n  GOT RESET CF9                     testbench.log
+  grep -n  PPR.*Reset type                   testbench.log
+  grep -n  PPR.*cf9 iotrap                   testbench.log
+
+  -- STAGE 9: GLOBAL RESET HARDWARE ENTRY --
+  grep -n  HSLE starting reset               testbench.log
+  grep -n  Global reset sequence              testbench.log
+  grep -n  Activating Fake GO RSP            testbench.log
+  grep -n  Creating a CBB event.*GLOBAL      testbench.log
+  grep -n  Running GLOBAL reset              testbench.log
+  grep -n  waiting for GBL_RST_WARN          testbench.log
+  grep -n  XX_PWRGOOD to 0                   testbench.log
+  grep -n  De-asserting S0_PWR_OK            testbench.log
+  grep -n  Forced XX_RESET_N.*PWRGOOD        testbench.log
+  grep -n  CORE disabled                     testbench.log
+  grep -n  Forced GLOBAL_RESET_N to 0        testbench.log
+  grep -n  SLP_S5 Asserted                   testbench.log
+  grep -n  SLP_S4 Asserted                   testbench.log
+  grep -n  SLP_S3 Asserted                   testbench.log
+  grep -n  RST_TAG Released All signals       testbench.log
+  grep -n  RST_TAG Reset triggered           testbench.log
+  grep -n  BEGIN_RESET_FLOW                  testbench.log
+  grep -n  begin reset flow received in imh  testbench.log
+
+  -- STAGE 10: SECOND BOOT RTL PHASES --
+  grep -n  imh primecode state CLEAR_HPM_SRAM  testbench.log  # 0x1, both dies
+  grep -n  HWRS.*RESET_PHASE_3_INFRA is complete  testbench.log
+  grep -n  HWRS.*RESET_PHASE_3_D2D is complete    testbench.log
+  grep -n  HWRS.*RESET_PHASE_3_INFRA_CFG is complete  testbench.log
+  grep -n  RST_TAG setting BIOS Scratchpad  testbench.log
+  grep -n  icecode_load                     testbench.log
+  grep -n  HWRS_RESET_COMPLETE              testbench.log   # primecode 0x3c
+  grep -n  waiting for BIOS first fetch     testbench.log
+
+  -- STAGE 11: SECOND BIOS BOOT --
+  grep -n  BIOS_TAIL_ACED_FFFFFF00          testbench.log
+  grep -n  BIOS complete and test load done testbench.log
+  grep -n  End of RESET_PHASE_7             testbench.log
+  grep -n  procedure for core switch        testbench.log
+
+  -- STAGE 12: SECOND OS BOOT --
+  grep -n  PPR_TEST_DONE                    testbench.log   # second occurrence
+
+================================================================================
+  GLOBAL RESET DEBUG DECISION TREE
+================================================================================
+
+  1. Check PPR_TEST_DONE count:
+       count >= 2  -->  PASS (both boots completed)
+       count == 1  -->  First boot OK; reset or second boot failed
+       count == 0  -->  First boot failed; treat as normal cold boot failure
+
+  2. If count == 0: Follow flow.txt Stage 0-7 analysis.
+
+  3. If count == 1:
+     a. Confirm SVOS Global Reset present            --> Stage 8 reached
+     b. Confirm PPR check: GOT RESET CF9 6           --> Stage 8 CF9 trap fired
+     c. Confirm RST_TAG HSLE starting reset           --> Stage 9 started
+     d. Confirm RST_TAG Global reset sequence         --> Stage 9 global path
+     e. Confirm RST_TAG waiting for GBL_RST_WARN      --> Stage 9 waiting HW
+     f. Confirm Forced GLOBAL_RESET_N to 0            --> Stage 9 GLOBAL_RESET_N
+     g. Confirm SLP_S5/S4/S3 all asserted             --> Stage 9 power down
+     h. Confirm RST_TAG Reset triggered               --> Stage 9 complete
+     i. Confirm BEGIN_RESET_FLOW                      --> Stage 10 started
+     j. Confirm begin reset flow in imh8 AND imh9     --> Stage 10 IMH start
+     k. Confirm HWRS_RESET_COMPLETE (0x3c) both dies  --> Stage 10 complete
+     l. Confirm BIOS_TAIL_ACED_FFFFFF00 (second)      --> Stage 11 complete
+     m. Failing step = failing stage
+
+  4. If Stage 9 failing:
+     - Check GBL_RST_WARN hang vs GLOBAL_RESET_N assertion vs SLP signal sequence
+     - Verify Fake GO RSP W/A activation/deactivation
+
+  5. If Stage 10 failing:
+     - Use reset_phase_flow.txt for HWRS sub-phase analysis
+     - Check primecode stuck state for which state hung
+     - Verify IceCode reload succeeded (grep icecode_load)
+
+  6. If Stage 11 failing:
+     - Load bios-issue-analyzer skill
+     - Use bios_flow.txt to identify failing sub-stage (6.0-6.6)
+     - Run decode_ewl.py and decode_post_code.py on second boot segment
+
+  7. If Stage 12 failing:
+     - Check serconsole for second OS boot errors
+     - Check emu.devices for test workload failure
+
+================================================================================
+  FILE DEPENDENCIES
+================================================================================
+
+  flow.txt               : Stages 0-7 (first cold boot golden flow)
+  cold_reset_flow.txt    : Cold reset Stages 8-13 reference
+  warm_reset_flow.txt    : Warm reset Stages 8-13 reference
+  global_reset_flow.txt  : This file. Global reset Stages 8-13
+  bios_flow.txt          : BIOS sub-phases 6.0-6.6 (Stage 6 and Stage 11)
+  reset_phase_flow.txt   : RTL reset sub-events (Stage 5 and Stage 10)
+
+  SIMICS SCRIPTS (in input_dir/):
+  test/svos_post.simics                       : SVOS test orchestration
+  simics_scripts/hsle/reset/hybrid_reset_handler.simics : CF9 + gbl_etr3 classification
+  simics_scripts/hsle/reset/reset_entry.simics   : CBB event creation (GLOBAL)
+  simics_scripts/hsle/reset/reset_entry_hw.simics : HW signal sequencing + GLOBAL_RESET_N
+
+================================================================================
+  END OF global_reset_flow.txt
+================================================================================

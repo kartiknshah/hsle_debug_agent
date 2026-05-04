@@ -1,0 +1,464 @@
+================================================================================
+              DMR MCP ICI HSLE -- COLD RESET EXECUTION FLOW
+              ==============================================
+  Model     : ZSE5_DMR_MCP_1S_ICI_FULLSTACK_HSLE (M6a, ZeBu ZSE5 emulation)
+  Config    : MCP 1-Socket ICI, 2 IMH dies (imh8 + imh9), 4 CBB dies
+  Reference : max_base_template.32.11 (M6A logs)
+  Result    : ACED (results.log)   Total Log Lines: 412259
+================================================================================
+
+  OVERVIEW
+  --------
+  This file extends flow.txt for HSLE runs that include a RESET cycle after
+  the first successful boot. STAGES 0-7 are identical to flow.txt (first
+  cold boot through first OS/PPR pass). Reset-specific stages start at STAGE 8.
+
+  FIRST COLD BOOT      : STAGES 0-7   (see flow.txt -- identical)
+  RESET TRIGGER        : STAGE 8      (post-first-boot OS or platform trigger)
+  RESET HARDWARE ENTRY : STAGE 9      (VP quiesce, CBB event, power cycling)
+  SECOND BOOT RTL      : STAGE 10     (primecode reload + HWRS sub-phases)
+  SECOND BIOS BOOT     : STAGE 11     (VP hybrid switch + BIOS execution)
+  SECOND OS BOOT       : STAGE 12     (SVOS / CentOS second boot)
+  SECOND BOOT TEST END : STAGE 13     (ACED / PPR_TEST_DONE or timeout)
+
+  RESET TYPE MATRIX
+  -----------------
+  +---------------------+---------------------------+--------------------------------+
+  | Script File         | reset_to_trigger          | Category                       |
+  +---------------------+---------------------------+--------------------------------+
+  | reboot_cold_reset   | reboot-cold               | Cold:   OS reboot (CF9=0xE)    |
+  | cold_reset          | solar-cold                | Cold:   SOLAR tool reboot      |
+  | warm_reset          | reboot-warm / solar-warm  | Warm:   CF9=0x6 or SOLAR       |
+  | global_reset        | solar-global              | Global: SOLAR global reset     |
+  | agr                 | platform-AGR              | Async Global Reset (AGR)       |
+  | awr                 | platform-AWR              | Async Warm Reset (AWR)         |
+  | swr                 | platform-SWR              | Sync Warm Reset (button press) |
+  +---------------------+---------------------------+--------------------------------+
+
+  RESET TYPE DETECTION  (hybrid_reset_handler.simics)
+  ---------------------------------------------------
+  CF9 register write 0xE  AND  gbl_etr3 == 0  -->  cold_reset=1   (COLD)
+  CF9 register write 0x6  AND  gbl_etr3 == 0  -->  warm_reset=1   (WARM)
+  CF9 register write (any) AND gbl_etr3 == 1  -->  global_reset=1 (GLOBAL)
+  RST_TAG AGR event triggered                  -->  agr=1 + global_reset=1
+  RST_TAG AWR event triggered                  -->  async_reset=TRUE + warm_reset=1
+  RST_TAG Reset_BTN event triggered            -->  warm_reset=1 (sync, button)
+
+  NOTE: For cold/warm OS reboot, BIOS writes CF9 during shutdown;
+  hybrid_reset_handler.simics catches the write and classifies the reset type.
+  AGR/AWR/SWR are injected via Simics attributes (platform-level resets).
+
+================================================================================
+  STAGES 0-7:  FIRST COLD BOOT  (identical to flow.txt)
+================================================================================
+
+  Refer to flow.txt for full milestone detail of Stages 0-7.
+  For reset runs, verify ALL Stage 0-7 milestones pass before checking reset.
+
+  QUICK CHECKLIST -- first boot milestones (grep testbench.log):
+  [ ] STAGE 0: spark_session.log loaded, ZeBu configured
+  [ ] STAGE 1: emu_log / ZSE5 device init complete
+  [ ] STAGE 2: Model init, IDI VP-RTL links connected
+  [ ] STAGE 3: ZeBu hardware compilation complete
+  [ ] STAGE 4: Simics run started, VP processors created
+  [ ] STAGE 5: RESET_PHASE_1 through RESET_PHASE_6 all observed (IMH+CBB)
+  [ ] STAGE 6: BIOS boot complete (BIOS_TAIL_ACED_FFFFFF00 or ExitBootServices)
+  [ ] STAGE 7: First OS boot -- PPR_TEST_DONE or SVOS/CentOS login
+
+  If ANY Stage 0-7 milestone is missing, treat as normal cold boot failure
+  per flow.txt -- do NOT proceed to reset stage analysis.
+
+================================================================================
+  STAGE 8:  RESET TRIGGER
+================================================================================
+
+  Entry condition: First PPR_TEST_DONE (first OS run complete) observed.
+  The post-setup script (e.g. reboot_cold_reset.simics) detects completion
+  and dispatches the reset trigger via os_reset_triggers.simics.
+
+  8.0  FIRST BOOT COMPLETION MARKER
+  |-- KEY GREP: PPR_TEST_DONE
+  |     Stream  : emu.devices
+  |     Example : [emu.devices]  PPR_TEST_DONE
+  |     Notes   : First occurrence signals first boot pass.
+  |               Second occurrence (Stage 12) signals second boot pass.
+  +-- REFERENCE LINE (max_base_template.32.11): ~355224
+
+  8.1  POST-SETUP SCRIPT RESET DISPATCH
+  |-- KEY GREP: RST_TAG: triggering
+  |     Stream  : emu.devices
+  |     Example : RST_TAG: triggering reboot-cold
+  |     Notes   : Emitted by os_reset_triggers.simics after first boot done.
+  +-- REFERENCE LINE (max_base_template.32.11): ~355232
+
+  8.2  RESET TYPE CONFIRMED
+  |-- KEY GREP: RST_TAG: COLD_RESET through OS reboot triggered
+  |     Stream  : emu.devices
+  |     Example : RST_TAG: COLD_RESET through OS reboot triggered
+  |     Notes   : For solar-cold: COLD_RESET through SOLAR reboot triggered
+  |               For warm:       WARM_RESET through OS reboot triggered
+  |               For global:     GLOBAL_RESET through SOLAR triggered
+  +-- REFERENCE LINE (max_base_template.32.11): ~355237
+
+  8.3  OS-SIDE UART ACTIONS (for reboot-cold / reboot-warm)
+  |-- KEY GREP: reboot
+  |     Stream  : serconsole
+  |     Example : reboot: machine restart
+  |               reboot: Power down
+  |     Notes   : OS executes reboot command; BIOS begins shutdown sequence.
+  |               For solar/platform resets, no OS reboot command visible.
+  +-- REFERENCE LINE (max_base_template.32.11): ~355250 (approximate)
+
+  STAGE 8 FAILURE SIGNATURES:
+  - Missing RST_TAG: triggering after PPR_TEST_DONE:
+    post-setup script did not fire; check test/reboot_cold_reset.simics loaded.
+  - Run ends immediately after PPR_TEST_DONE with no reset:
+    Single-boot run; check post_setup_script config in spark_session.log.
+  - RST_TAG: triggering seen but no hardware reset follows:
+    os_reset_triggers.simics dispatch table mismatch; check reset_to_trigger.
+
+================================================================================
+  STAGE 9:  RESET HARDWARE ENTRY
+================================================================================
+
+  hybrid_reset_handler.simics classifies the reset type, then reset_entry.simics
+  creates the CBB event, and reset_entry_hw.simics drives power/reset signals.
+
+  9.0  HSLE RESET PROCEDURES START
+  |-- KEY GREP: RST_TAG HSLE starting reset procedures
+  |     Stream  : emu.devices
+  |     Example : RST_TAG HSLE starting reset procedures
+  +-- REFERENCE LINE (max_base_template.32.11): ~355252
+
+  9.1  VP QUIESCE
+  |-- KEY GREP: RST_TAG.*quiesce
+  |     Stream  : emu.devices
+  |     Example : RST_TAG quiescing VP processors
+  +-- REFERENCE LINE (max_base_template.32.11): ~355260 (approximate)
+
+  9.2  CBB RESET EVENT CREATION
+  |-- KEY GREP: RST_TAG Creating a CBB event for reset
+  |     Stream  : emu.devices
+  |     Example : [reset_entry.simics] RST_TAG Creating a CBB event for reset: COLD
+  |     Notes   : reset type: COLD / WARM / GLOBAL / PKGS5
+  +-- REFERENCE LINE (max_base_template.32.11): ~355270 (approximate)
+
+  9.3  CBB RESET EVENT INFORM
+  |-- KEY GREP: Inform RST_TAG: Running.*reset.*Event_ID
+  |     Stream  : emu.devices
+  |     Example : Inform RST_TAG: Running COLD reset --> Delay: 2 --> Event_ID: 1001
+  +-- REFERENCE LINE (max_base_template.32.11): ~355280 (approximate)
+
+  9.4  PLTRST_SYNC WAIT  (cold and warm resets only)
+  |-- KEY GREP: RST_TAG waiting for PLTRST_SYNC
+  |     Stream  : emu.devices
+  |     Example : RST_TAG waiting for PLTRST_SYNC
+  |     Notes   : Cold/warm only. Global reset waits for GBL_RST_WARN instead.
+  |               AGR/AWR skip this step entirely.
+  +-- REFERENCE LINE (max_base_template.32.11): ~361100 (approximate)
+
+  9.5  POWER AND RESET SIGNAL ASSERTION
+  |-- KEY GREP: RST_TAG Forced.*RESET_N.*PWRGOOD.*PWR_OK to 0
+  |     Stream  : emu.devices
+  |     Example : RST_TAG Forced XX_RESET_N, XX_PWRGOOD and PWR_OK to 0
+  |     Notes   : SLP_S5/S4/S3 asserted before PWRGOOD de-assertion.
+  |               RELEASE_FORCES_FOR_RESET follows.
+  +-- REFERENCE LINE (max_base_template.32.11): ~361110 (approximate)
+
+  9.6  RESET TRIGGERED
+  |-- KEY GREP: RST_TAG Reset triggered
+  |     Stream  : emu.devices
+  |     Example : RST_TAG Reset triggered
+  |     Notes   : Hardware reset asserted. For cold/global: fuse reload before this.
+  +-- REFERENCE LINE (max_base_template.32.11): ~361117
+
+  9.7  BEGIN_RESET_FLOW MARKER
+  |-- KEY GREP: BEGIN_RESET_FLOW
+  |     Stream  : emu.devices
+  |     Example : BEGIN_RESET_FLOW
+  +-- REFERENCE LINE (max_base_template.32.11): ~361119
+
+  STAGE 9 FAILURE SIGNATURES:
+  - Hangs at RST_TAG HSLE starting reset procedures:
+    VP quiesce failed; check for VP assertion or stuck instruction stream.
+  - Hangs at RST_TAG waiting for PLTRST_SYNC:
+    BIOS did not assert PLTRST during shutdown; OS shutdown incomplete.
+    Check serconsole for OS/BIOS error before reset.
+  - RST_TAG Reset triggered seen but no second primecode states follow:
+    RTL did not restart after PWRGOOD re-assertion; check ZeBu status.
+  - Missing RST_TAG Creating a CBB event:
+    reset_entry.simics failed to classify reset type; log CF9 value.
+
+================================================================================
+  STAGE 10:  SECOND BOOT RTL PHASES  (primecode reload + HWRS)
+================================================================================
+
+  After PWRGOOD re-assertion, the RTL subsystem (IMH + CBB dies) runs through
+  primecode states and HWRS sub-phases identical to the first boot Stage 5.
+  Three parallel streams must all complete before VP re-enable:
+    Stream A: CBB BOOT_FSM primecode states (die8 + die9 -- both IMH dies)
+    Stream B: HWRS RESET_PHASE sub-phases (imh0 + imh1 -- both instances)
+    Stream C: RST_TAG control signal states
+
+  See reset_phase_flow.txt for full RESET_PHASE sub-event detail.
+
+  10.0  IMH PRIMECODE START  (Stream A)
+  |-- KEY GREP: imh.*BOOT_FSM.*0x01
+  |     Stream  : emu.devices
+  |     Example : [emu.devices] imh8: BOOT_FSM state 0x01 (INIT)
+  |               [emu.devices] imh9: BOOT_FSM state 0x01 (INIT)
+  |     Notes   : Both imh8 and imh9 must start. Symmetric.
+  +-- REFERENCE LINE (max_base_template.32.11): ~361119-361125
+
+  10.1  HWRS RESET_PHASE_3 SUB-PHASES  (Stream B)
+  |-- KEY GREP: RESET_PHASE_3
+  |     Stream  : emu.devices
+  |     Example : [emu.devices] HWRS imh0: RESET_PHASE_3_INFRA
+  |               [emu.devices] HWRS imh1: RESET_PHASE_3_INFRA
+  |     Notes   : Follows primecode state 0x10 (LOAD_PATCHING).
+  |               Both imh0 and imh1 must complete in parallel.
+  +-- REFERENCE LINE (max_base_template.32.11): ~362492
+
+  10.2  PRIMECODE PROGRESS STATES
+  |-- KEY GREP: BOOT_FSM state 0x
+  |     Expected sequence: 0x01 -> 0x02 -> 0x04 -> 0x08 -> 0x10 -> 0x20 -> 0x41
+  |     Stream  : emu.devices
+  |     Notes   : 0x41 = final primecode state before VP handoff.
+  |               Both die8 and die9 must reach 0x41.
+  +-- REFERENCE LINE (max_base_template.32.11): states spread ~361119-365546
+
+  10.3  RESET_PHASE_4 THROUGH RESET_PHASE_6  (Stream B)
+  |-- KEY GREP: RESET_PHASE_4|RESET_PHASE_5|RESET_PHASE_6
+  |     Stream  : emu.devices
+  |     Example : [emu.devices] HWRS imh0: RESET_PHASE_4 complete
+  |               [emu.devices] HWRS imh0: RESET_PHASE_6 complete
+  |     Notes   : RESET_PHASE_6 triggers IDI Mux enable and VP start.
+  +-- REFERENCE LINE (max_base_template.32.11): ~365000-365546
+
+  10.4  RST_TAG WAITING FOR BIOS FIRST FETCH  (Stream C)
+  |-- KEY GREP: RST_TAG waiting for BIOS first fetch
+  |     Stream  : emu.devices
+  |     Example : RST_TAG waiting for BIOS first fetch
+  |     Notes   : Issued after RESET_PHASE_6. VP is enabled and waiting.
+  +-- REFERENCE LINE (max_base_template.32.11): ~365546
+
+  STAGE 10 FAILURE SIGNATURES:
+  - imh8 starts BOOT_FSM but imh9 never appears:
+    One IMH die hung; check for ZeBu hardware error on that die.
+  - BOOT_FSM stalls at 0x10 (LOAD_PATCHING):
+    Firmware load issue; check fuse reload and patch memory access.
+  - RESET_PHASE_3 seen but RESET_PHASE_6 never completes:
+    RTL infrastructure hang; check HWRS stream for specific sub-phase.
+    See reset_phase_flow.txt for sub-phase failure signatures.
+  - RST_TAG waiting for BIOS first fetch never seen:
+    RESET_PHASE_6 did not complete; RTL hang before VP handoff.
+
+================================================================================
+  STAGE 11:  SECOND BIOS BOOT
+================================================================================
+
+  After RESET_PHASE_6, VP processors re-enable and BIOS begins executing
+  on the RTL uncore (hybrid mode). Second BIOS boot follows the same
+  sub-phase flow as the first boot Stage 6 (see bios_flow.txt).
+
+  NOTE: For cold reset, BIOS performs full POST again (all stages 6.0-6.6).
+        For warm reset, BIOS may skip some POST phases (S3 resume path).
+
+  11.0  VP RE-ENABLE (IDI MUX ENABLED)
+  |-- KEY GREP: IDI.*[Mm]ux.*enabl
+  |     Stream  : emu.devices
+  |     Example : [emu.devices] IDI Mux enabled -- VP processors starting
+  |     Notes   : Marks start of VP instruction execution after reset.
+  +-- REFERENCE LINE (max_base_template.32.11): ~365548 (approximate)
+
+  11.1  BIOS EXECUTING (serconsole stream)
+  |-- KEY GREP: see bios_flow.txt stages 6.0-6.6
+  |     Stream  : serconsole
+  |     Notes   : Second BIOS boot serconsole output follows same pattern
+  |               as first boot. For cold reset, full POST visible.
+  |               For warm reset, abbreviated output expected.
+
+  11.2  SECOND BIOS COMPLETION
+  |-- KEY GREP: BIOS_TAIL_ACED_FFFFFF00
+  |     Stream  : debug_port
+  |     Example : BIOS_TAIL_ACED_FFFFFF00
+  |     Notes   : Emitted at end of RESET_PHASE_7 during second BIOS boot.
+  |               Alternative: ExitBootServices if OS takes over directly.
+  +-- REFERENCE LINE (max_base_template.32.11): ~366230
+
+  11.3  END OF RESET_PHASE_7  (second boot)
+  |-- KEY GREP: RESET_PHASE_7.*end
+  |     Stream  : emu.devices
+  |     Example : [emu.devices] End of RESET_PHASE_7
+  +-- REFERENCE LINE (max_base_template.32.11): ~366275
+
+  STAGE 11 FAILURE SIGNATURES:
+  - IDI Mux enabled but no BIOS serconsole output:
+    VP started but BIOS fetch failed; check BIOS flash model connection.
+  - BIOS hangs in second POST (serconsole stops mid-phase):
+    Treat as Stage 6 BIOS failure; load bios-issue-analyzer skill.
+    Use bios_flow.txt sub-phases to identify failing sub-stage (6.0-6.6).
+  - BIOS_TAIL_ACED never seen after VP re-enable:
+    Check for EWL/IPSD/RC Fatal errors in serconsole and debug_port streams.
+    Run decode_ewl.py and decode_post_code.py on second boot log segment.
+
+================================================================================
+  STAGE 12:  SECOND OS BOOT
+================================================================================
+
+  After the second BIOS boot, the OS boots for the second time.
+
+  12.0  SECOND OS BOOT STARTED (serconsole)
+  |-- KEY GREP: Loading initial ramdisk|GRUB|kernel loading
+  |     Stream  : serconsole
+  |     Notes   : OS kernel load messages in serconsole.
+  |               For SVOS: SVOS banner.  For CentOS: CentOS banner.
+
+  12.1  SECOND OS BOOT COMPLETE
+  |-- KEY GREP: PPR_TEST_DONE
+  |     Stream  : emu.devices
+  |     Example : [emu.devices]  PPR_TEST_DONE
+  |     Notes   : SECOND occurrence of PPR_TEST_DONE. This is the pass marker.
+  |               First occurrence was Stage 7. Count should be 2 for pass.
+  +-- REFERENCE LINE (max_base_template.32.11): ~369118
+
+  STAGE 12 FAILURE SIGNATURES:
+  - Second OS fails to boot (kernel panic, BIOS loops):
+    Treat as Stage 7 failure.  Check serconsole for OS error messages.
+  - OS boots but test workload crashes:
+    Check test output in emu.devices stream for error codes.
+  - PPR_TEST_DONE count == 1 only:
+    Second boot did not complete.  Check for HANG or timeout after Stage 11.
+
+================================================================================
+  STAGE 13:  TEST TERMINATION
+================================================================================
+
+  After the second PPR_TEST_DONE, the run terminates.
+
+  13.0  RESET TEST COMPLETE
+  |-- KEY GREP: RESET_TEST_COMPLETE
+  |     Stream  : emu.devices
+  |     Example : RST_TAG: RESET_TEST_COMPLETE
+  |     Notes   : Emitted by reboot_cold_reset.simics after second PPR_TEST_DONE.
+
+  13.1  RESULTS FILE
+  |-- KEY GREP: test_result
+  |     File    : test/results.log
+  |     Example : test_result: ACED
+  |     Notes   : ACED = pass.  -1 or missing = run did not complete.
+
+  13.2  HANG PATH (timeout)
+  |-- KEY GREP: HANG
+  |     Stream  : emu.devices or results.log
+  |     Example : test_result: HANG
+  |     Notes   : Bootstrap timeout before second PPR_TEST_DONE.
+
+  13.3  DEAD PATH (fatal hardware error)
+  |-- KEY GREP: DEAD
+  |     Stream  : emu.devices or results.log
+  |     Notes   : Fatal ZeBu/RTL error detected during reset or second boot.
+
+================================================================================
+  COMPLETE TIMELINE GREP SEQUENCE
+  (reset run milestone verification -- ordered by log line number)
+================================================================================
+
+  -- FIRST BOOT (Stages 0-7): same as flow.txt --
+
+  grep -n 'PPR_TEST_DONE'                testbench.log   # Stage 7 + Stage 12
+  grep -c 'PPR_TEST_DONE'                testbench.log   # should return 2 for pass
+
+  -- STAGE 8: RESET TRIGGER --
+  grep -n 'RST_TAG: triggering'          testbench.log
+  grep -n 'COLD_RESET through'           testbench.log
+  grep -n 'WARM_RESET through'           testbench.log
+  grep -n 'GLOBAL_RESET through'         testbench.log
+
+  -- STAGE 9: RESET HARDWARE ENTRY --
+  grep -n 'HSLE starting reset'          testbench.log
+  grep -n 'Creating a CBB event'         testbench.log
+  grep -n 'Running COLD reset'           testbench.log
+  grep -n 'waiting for PLTRST_SYNC'      testbench.log
+  grep -n 'RST_TAG Reset triggered'      testbench.log
+  grep -n 'BEGIN_RESET_FLOW'             testbench.log
+
+  -- STAGE 10: SECOND BOOT RTL PHASES --
+  grep -n 'BOOT_FSM state 0x01'          testbench.log   # imh8 and imh9 start
+  grep -n 'BOOT_FSM state 0x41'          testbench.log   # final primecode state
+  grep -n 'RESET_PHASE_3'                testbench.log   # HWRS sub-phase start
+  grep -n 'RESET_PHASE_6'                testbench.log   # VP handoff trigger
+  grep -n 'waiting for BIOS first fetch' testbench.log
+
+  -- STAGE 11: SECOND BIOS BOOT --
+  grep -n 'IDI.*[Mm]ux.*enabl'           testbench.log
+  grep -n 'BIOS_TAIL_ACED_FFFFFF00'      testbench.log
+  grep -n 'RESET_PHASE_7'                testbench.log
+
+  -- STAGE 12: SECOND OS BOOT --
+  grep -n 'PPR_TEST_DONE'                testbench.log   # second occurrence
+
+  -- STAGE 13: TERMINATION --
+  grep -n 'RESET_TEST_COMPLETE'          testbench.log
+  cat test/results.log
+
+================================================================================
+  RESET RUN DEBUG DECISION TREE
+================================================================================
+
+  1. Check PPR_TEST_DONE count:
+       count == 2  -->  PASS (both boots completed)  -->  check results.log
+       count == 1  -->  First boot OK; reset or second boot failed
+       count == 0  -->  First boot failed; treat as normal cold boot failure
+
+  2. If count == 0: Follow flow.txt Stage 0-7 analysis.
+
+  3. If count == 1:
+     a. Confirm RST_TAG: triggering present  --> Stage 8 reached
+     b. Confirm RST_TAG Reset triggered       --> Stage 9 reached
+     c. Confirm BEGIN_RESET_FLOW              --> Stage 9 complete
+     d. Confirm second BOOT_FSM state 0x01    --> Stage 10 started
+     e. Confirm RESET_PHASE_6 (second set)    --> Stage 10 complete
+     f. Confirm BIOS_TAIL_ACED_FFFFFF00 (2nd) --> Stage 11 complete
+     g. Failing step = failing stage
+
+  4. If Stage 9 failing: Check PLTRST_SYNC hang vs CBB event hang vs PWRGOOD hang.
+
+  5. If Stage 10 failing:
+     - Use reset_phase_flow.txt for HWRS sub-phase analysis
+     - Check BOOT_FSM stuck state for primecode hang
+
+  6. If Stage 11 failing:
+     - Load bios-issue-analyzer skill
+     - Use bios_flow.txt to identify failing sub-stage (6.0-6.6)
+     - Run decode_ewl.py and decode_post_code.py on second boot log segment
+
+  7. If Stage 12 failing:
+     - Check serconsole for second OS boot errors
+     - Check emu.devices for test workload failure
+
+================================================================================
+  FILE DEPENDENCIES
+================================================================================
+
+  flow.txt             : Stages 0-7 (first cold boot golden flow)
+  cold_reset_flow.txt  : This file. Stages 8-13 (reset + second boot)
+  bios_flow.txt        : BIOS sub-phases 6.0-6.6 (Stage 6 and Stage 11)
+  reset_phase_flow.txt : RTL reset sub-events (Stage 5 and Stage 10)
+
+  SIMICS SCRIPTS (in input_dir/simics_scripts/):
+  hsle/reset/hybrid_reset_handler.simics : CF9 intercept + reset classification
+  hsle/reset/reset_entry.simics           : CBB event creation
+  hsle/reset/reset_entry_hw.simics        : Hardware signal sequencing
+  hsle/reset/cold_reset.simics            : Cold reset script (solar-cold)
+  hsle/reset/warm_reset.simics            : Warm reset script
+  hsle/reset/global_reset.simics          : Global reset script
+  hsle/reset/agr.simics                   : Async Global Reset
+  hsle/reset/awr.simics                   : Async Warm Reset
+  hsle/reset/swr.simics                   : Sync Warm Reset (button)
+  simics_post_setup_scripts/reset/os_reset_triggers.simics : Dispatch table
+  simics_post_setup_scripts/reset/reboot_cold_reset.simics : PPR_TEST_DONE x2
+
+================================================================================
+  END OF cold_reset_flow.txt
+================================================================================

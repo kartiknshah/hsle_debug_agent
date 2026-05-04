@@ -79,6 +79,47 @@ This file documents **three parallel log streams** inside `testbench.log` during
 **Read `reset_phase_flow.txt` whenever Stage 5 is the failing stage**, to identify the exact
 sub-event and die/IMH instance where the hang occurred.
 
+
+For reset scenario analysis (Stage 8-13: reset trigger, hardware entry, second boot), additionally read:
+```
+.github/skills/hsle-run-debugger/cold_reset_flow.txt
+```
+
+This file documents **6 reset-specific stages** (8-13) covering all reset types (cold/warm/global, reboot/solar, AGR/AWR/SWR):
+
+| Stage | Phase | Key marker |
+|-------|-------|------------|
+| 8 | Reset trigger (post-first-boot) | `RST_TAG: triggering`, `COLD_RESET through OS reboot triggered` |
+| 9 | Reset hardware entry | `HSLE starting reset procedures`, `BEGIN_RESET_FLOW` |
+| 10 | Second boot RTL phases | `BOOT_FSM state 0x01`, `RESET_PHASE_6`, `BIOS first fetch` |
+| 11 | Second BIOS boot | `IDI Mux enabled`, `BIOS_TAIL_ACED_FFFFFF00` |
+| 12 | Second OS boot | `PPR_TEST_DONE` (second occurrence) |
+| 13 | Test termination | `RESET_TEST_COMPLETE`, `results.log` |
+
+**Read `cold_reset_flow.txt` whenever a reset cycle is detected** (i.e., `RST_TAG: triggering` in testbench.log), to identify the exact failing stage in the reset or second boot sequence.
+
+For warm reset scenario analysis specifically, additionally read:
+```
+.github/skills/hsle-run-debugger/warm_reset_flow.txt
+```
+
+This file documents the warm-reset-specific hardware entry sequence (Stage 9 differences):
+no PWRGOOD de-assertion, no fuse reload, no SLP signals, RESET_N asserted directly.
+Use when the reset type is WARM (CF9=0x6, AWR, or SWR) to verify correct warm-specific
+behavior and detect cold/warm misclassification errors.
+
+
+For global reset scenario analysis specifically, additionally read:
+```
+.github/skills/hsle-run-debugger/global_reset_flow.txt
+```
+
+This file documents the global-reset-specific hardware entry sequence (Stage 9 differences):
+GBL_RST_WARN wait (not PLTRST_SYNC), GLOBAL_RESET_N assertion, full PWRGOOD de-assertion,
+SLP_S5/S4/S3 assertion, fuse + IceCode reload, and Fake GO RSP W/A activation.
+Use when the reset type is GLOBAL (CF9=0x06 + gbl_etr3=1, or ACPI global reset)
+to verify correct global-specific behavior.
+
 ---
 
 ## Procedure
@@ -588,89 +629,72 @@ Match findings against this catalog of known failure signatures:
 
 ---
 
+### Step 5b — Reset Cycle Detection and Analysis
+
+After completing Stage 0-7 analysis (or if all stages pass), check for reset cycles:
+
+```bash
+# Check if this is a reset run (any RST_TAG: triggering marker)
+grep -c "RST_TAG: triggering\|RST_TAG.*HSLE starting reset" "$TBLOG"
+
+# If count > 0, this is a reset run. Determine the reset type:
+grep "RST_TAG: triggering\|COLD_RESET through\|WARM_RESET through\|GLOBAL_RESET through\|GOT RESET CF9" "$TBLOG"
+
+# Count PPR_TEST_DONE occurrences (expect 1 per boot cycle)
+grep -c "PPR_TEST_DONE" "$TBLOG"
+
+# Count reset cycles (each RST_TAG: triggering = one reset)
+grep -c "RST_TAG: triggering\|RST_TAG.*HSLE starting reset" "$TBLOG"
+```
+
+**Reset type determination:**
+- `COLD_RESET through` → Load `cold_reset_flow.txt`, analyze Stages 8-13
+- `WARM_RESET through` or `GOT RESET CF9 6` (without gbl_etr3) → Load `warm_reset_flow.txt`
+- `GLOBAL_RESET through` or `GOT RESET CF9 6` (with gbl_etr3=1) → Load `global_reset_flow.txt`
+
+**Back-to-back resets:** If multiple `RST_TAG: triggering` markers exist, analyze each
+reset cycle sequentially. Each cycle follows Stages 8-13. The Nth cycle's Stage 10-12
+milestones appear after the (N-1)th cycle's completion. For each cycle:
+1. Identify the reset type from the RST_TAG markers for that cycle
+2. Load the corresponding reset flow reference file
+3. Verify all milestones for Stages 8-13 of that cycle
+4. The first cycle with a missing milestone is the failure point
+
+---
+
 ### Step 6 — Produce Debug Summary
 
-Output a structured summary in this format:
+**IMPORTANT**: Do NOT display the summary in the chat window. Write it to a file instead.
 
-```
-HSLE Run Debug Summary
-======================
-Run Path    : <run_dir>
-Test Name   : <testname>
-OS Image    : <os_image from testbench.log>
-Result      : <ACED / PPR_PASS / HANG / DEAD / TIMEOUT / NO_RESULT>
+#### Output File
+Write the summary to: `<run_dir>/hsle_debug_agent_summary.txt`
 
-Stage Progress:
-  Stage 0 (Bootstrap)         : PASS
-  Stage 1 (sle.simics setup)  : PASS
-  Stage 2 (VP platform)       : PASS
-  Stage 3 (HSLE core setup)   : PASS
-  Stage 4 (CBB reset)         : PASS
-  Stage 5 (Reset phases)      : PASS (all 6 phases completed)
-  Stage 6 (BIOS boot)         : PASS (ExitBootServices reached)
-  Stage 7 (OS boot)           : *** FAIL — <description> ***
-  Stage 8 (Test termination)  : NOT REACHED
+If the run directory is not writable, write to the current working directory.
 
-Last Activity:
-  Last console output : line <N> @ <wall clock timestamp>
-  Last debug_port PC  : 0x<XX> -> <sub-phase name from bios_flow.txt>
-  Emu cycle at last   : <cycle>
-  Timeout at          : <cycle> (<wall clock>)
-  Silence gap         : <N minutes>
+#### Template Selection
+- **Normal cold boot** (no reset detected): Use template from
+  `.github/skills/hsle-run-debugger/templates/summary_cold_boot.txt`
+- **Reset scenario** (one or more reset cycles detected): Use template from
+  `.github/skills/hsle-run-debugger/templates/summary_reset_scenario.txt`
 
-Failure Signature : <matching known signature, or "New — describe">
-Root Cause        : <concise analysis with log evidence>
-Recommendations   : <specific, actionable steps>
-```
+#### Procedure
+1. Read the appropriate template file
+2. Fill in ALL placeholders with actual values from the analysis
+3. For PASS runs, set "N/A" for failure analysis fields
+4. For reset scenarios with back-to-back resets, duplicate the reset cycle block
+   for each additional cycle
+5. Write the completed summary to the output file
+6. Confirm to the user: "Debug summary written to: <path>"
 
----
-
-## Reference Run Comparison
-
-When diagnosing, compare key parameters against the known-good reference run (SVOS,
-26ww12_2, `mcp_ici_hsle_svos_fmod.0`):
-
-| Parameter | Reference (SVOS) | How to check in failing run |
-|-----------|-----------------|----------------------------|
-| OS image | SVOS 26WW09.3 (`sut-diamondrapids-efi.amd64.craff`) | `grep "os_image\|disk_image" testbench.log` |
-| Kernel cmdline | Proper `mem=` value present | `grep "Command line:" testbench.log` |
-| bootstrap_timeout | 9,000,000,000 cycles | `grep "bootstrap_timeout" testbench.log` |
-| DIMM count | 16 DIMMs (8 per IMH die) | Check `vp.simics` DDR config section in log |
-| Fmod flags | `cbbpunit_imhpunit_s3m_fmod=True` | `grep "fmod" testbench.log` |
-| BIOS version | `OKSDCRB1.86B.0032.D77.2602232255` | `grep "BIOS ID:" testbench.log` |
-| Stage 6 JEDEC count | 16 | `grep "JEDEC_DATA" testbench.log | wc -l` |
-| Stage 6 MRC bypass | `IpMcMemInitComplete.*bypassed` (imh2.0 + imh2.1) | `grep "IpMcMemInitComplete" testbench.log` |
-
----
-
-## Runtime Timeline (from reference run)
-
-For quick stage timing comparison:
-
-| Wall Clock | Emu Cycle | Event |
-|-----------|-----------|-------|
-| ~T+0m | 0 | RTI: Pre Cycle 0, Hit cycle_0 |
-| ~T+0m | 0 | RTI: Pre Mount (connecting to ZeBu) |
-| ~T+3m | 0 | RTI: Mounted (ZeBu connected) |
-| ~T+4m | 0 | Fuse + Primecode + S3M loading |
-| ~T+6m | 0 | S3M FW_BYPASS set, VP disabled, Waiting for RTL Core Reset |
-| ~T+8m | ~210 | RESET_PHASE_1 starts |
-| ~T+17m | ~419M | End RESET_PHASE_2 |
-| ~T+21m | ~606M | RESET_PHASE_3_INFRA complete (both IMH) |
-| ~T+21m | ~607M | RESET_PHASE_3_D2D complete |
-| ~T+22m | ~624M | RESET_PHASE_3_INFRA_CFG complete |
-| ~T+24m | ~652M | End RESET_PHASE_4 |
-| ~T+30m | ~875M | End RESET_PHASE_5 → RESET_PHASE_6 → Hybrid switch |
-| ~T+30m | ~875M | Stage 6.0: IDI Mux enabled, debug_port 0x0001 (SEC start) |
-| ~T+31m | ... | Stage 6.0: debug_port 0x007f (SEC complete, ~27 sec wall time) |
-| ~T+31m | ... | Stage 6.1: EarlyPlatformPchInit (UART online) |
-| ~T+32m | ... | Stage 6.2: START_MRC_RUN -> PeiInstallPeiMemory (~12 min MRC) |
-| ~T+44m | ... | Stage 6.3: DXE IPL Entry |
-| ~T+52m | ... | Stage 6.4: DXE Core loaded, NVMe enumerated, ReadyToBoot |
-| ~T+61m | ... | Stage 6.5: [Bds]Booting, NVMe GPT parsed |
-| ~T+63m | ... | Stage 6.6: ExitBootServices, Decompressing Linux |
-| ~T+66m | ~40.7B | SVOS GRUB menu |
-| ~T+67m | ~40.7B | Linux kernel starts |
+#### Field Guidelines
+- `{result}`: Use exactly one of: `PASS (ACED)`, `PASS (PPR_PASS)`, `FAIL (HANG)`,
+  `FAIL (DEAD)`, `FAIL (TIMEOUT)`, `FAIL (NO_RESULT)`
+- `{stageN}`: Use `PASS`, `FAIL — <brief description>`, or `NOT REACHED`
+- `{failing_stage}`: e.g., "Stage 7 — OS Boot" or "Stage 10 — Second Boot RTL (Reset Cycle 1)"
+- `{evidence}`: Include 3-5 actual grep lines from testbench.log with line numbers
+- `{root_cause}`: 2-5 sentences with specific log evidence
+- `{recommendations}`: Numbered list of 1-3 actionable steps
+- `{log_evidence}`: 5-10 key grep lines that support the diagnosis
 
 ---
 

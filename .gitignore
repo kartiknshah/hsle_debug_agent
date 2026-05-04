@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+.nfs*
+hsle_debug_agent_summary.txt
