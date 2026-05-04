@@ -155,6 +155,29 @@ Requirements: Python 3.8+, no external dependencies.
 
 ## Procedure
 
+### Step 0 — Run the Automated Analyzer FIRST (Token-Efficient)
+
+Before any manual grep, **always run the Python analyzer script first**:
+
+```bash
+python3 .github/skills/hsle-run-debugger/scripts/hsle_analyzer.py <run_dir> --summary
+```
+
+This produces:
+- Console output: result, scenario type, reset cycles, PPR count
+- File output: `<run_dir>/hsle_debug_agent_summary.txt` (or local if no write permission)
+
+**Performance**: ~4-5 seconds for 400K-line logs (single-pass, keyword pre-filter).
+
+**If the script identifies the failure clearly** (e.g., `FAIL@Stage11: BIOS first fetch wait
+seen but IDI Mux never enabled`), use that result directly. Only proceed to manual
+grep analysis (Steps 1-6) when:
+- The script reports an unexpected result that needs verification
+- The failure context needs more detail than the script provides
+- The script encounters an error or unrecognized pattern
+
+---
+
 ### Step 1 — Locate and Validate testbench.log
 
 ```bash

@@ -28,6 +28,23 @@ Never debug from memory — always follow the skill's step-by-step procedure.
 
 ## Debug Workflow
 
+### Phase 0: Automated Analysis (ALWAYS RUN FIRST)
+
+Run the Python analyzer script before any manual grep:
+```bash
+python3 .github/skills/hsle-run-debugger/scripts/hsle_analyzer.py <run_dir> --summary
+```
+
+This completes in ~4-5 seconds for 400K-line logs and produces:
+- Result classification (PASS/FAIL), scenario type, reset cycle details
+- Summary file written to `<run_dir>/hsle_debug_agent_summary.txt`
+
+**If the script result is clear and complete**, report it to the user and stop.
+Only proceed to manual Phase 1-3 analysis when the script result needs verification
+or more context is required.
+
+---
+
 Follow this exact procedure for every debug request:
 
 ### Phase 1: Normal Cold Boot Analysis (Stages 0-8)
