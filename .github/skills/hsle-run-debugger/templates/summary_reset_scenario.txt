@@ -35,8 +35,8 @@
   Stage 3 (HSLE Core Setup)       : {stage3}
   Stage 4 (CBB Reset Flow)        : {stage4}
   Stage 5 (RTL Reset Phases)      : {stage5}
-  Stage 6 (BIOS Boot)             : {stage6}
-  Stage 7 (OS Boot)               : {stage7}
+  Stage 6 (BIOS Boot)             : {stage6}  (PARTIAL if BIOS-initiated reset)
+  Stage 7 (OS Boot)               : {stage7}  (NOT REACHED if BIOS-initiated reset)
 
   STAGE PROGRESS — RESET CYCLE {reset_cycle_num}
   -----------------------------------------------
@@ -55,6 +55,12 @@
 ================================================================================
   RESET-SPECIFIC ANALYSIS
 ================================================================================
+
+  Reset Trigger Context
+  ---------------------
+  Reset Origin     : {reset_origin}  (POST-OS-BOOT / BIOS-INITIATED / PLATFORM-INJECTED)
+  First Boot Stage : {first_boot_stage}  (Stage 6 PARTIAL if BIOS-initiated, Stage 7 PASS if post-OS)
+  BIOS Sub-Stage   : {bios_substage}  (6.0-6.6 sub-stage where reset was triggered, if BIOS-initiated)
 
   Reset Type Detection
   --------------------

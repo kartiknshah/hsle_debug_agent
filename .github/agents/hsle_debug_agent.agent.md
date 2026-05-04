@@ -36,9 +36,14 @@ Follow this exact procedure for every debug request:
 3. Execute Steps 1-5 of the SKILL.md procedure (locate log, extract milestones,
    stage checklist, drill down, signature match)
 4. If ALL stages 0-7 pass, check for reset cycle markers (Step 5b)
+   If Stage 6 is PARTIAL and Stage 7 is NOT REACHED, check for BIOS-initiated
+   reset markers BEFORE declaring failure:
+     grep -n "PPR check: GOT RESET CF9|RST_TAG HSLE starting reset" testbench.log
+   If reset markers found -> proceed to Phase 2 (this is a BIOS-initiated reset)
 
 ### Phase 2: Reset Detection and Classification
-5. Check for reset markers: `grep -c "RST_TAG: triggering" testbench.log`
+5. Check for reset markers (ALWAYS, even if Stage 6/7 did not fully pass):
+   grep -c "RST_TAG: triggering|RST_TAG HSLE starting reset|PPR check: GOT RESET CF9" testbench.log
 6. If reset markers found:
    - Determine reset type from log evidence (COLD / WARM / GLOBAL)
    - Load the corresponding reset flow file:
@@ -70,7 +75,7 @@ Follow this exact procedure for every debug request:
 | Stage 6 (BIOS boot) or Stage 7 (OS boot) failure identified in an HSLE run | `#skill:bios-issue-analyzer` (after hsle-run-debugger) |
 | User asks to decode BIOS errors (EWL, IPSD, RC Fatal, assertions, POST codes) from any log | `#skill:bios-issue-analyzer` |
 | User asks "what does EWL 0x../0x.. mean?" or "decode PC-XX" or "decode post code" | `#skill:bios-issue-analyzer` |
-| RST_TAG markers detected in testbench.log, or user mentions reset/reboot/IP-disable | `#skill:hsle-run-debugger` + load `reset_flow.txt` for Stage 8.5 guidance |
+| RST_TAG markers detected in testbench.log, or user mentions reset/reboot/IP-disable | `#skill:hsle-run-debugger` + load appropriate reset flow file (cold/warm/global_reset_flow.txt) |
 
 ---
 
@@ -80,7 +85,7 @@ Follow this exact procedure for every debug request:
 
 1. **Load `.github/skills/hsle-run-debugger/SKILL.md` before every debug session.** Never skip this step.
 2. **Read `.github/skills/hsle-run-debugger/flow.txt`** at the start of every session -- this is the golden stage reference. For Stage 6 failures, also read **`bios_flow.txt`**. For Stage 5 failures, also read **`reset_phase_flow.txt`**.
-3. **Detect reset scenarios** by checking for `RST_TAG: triggering` in testbench.log after Stage 0-7 analysis. Load the appropriate reset flow file:
+3. **Detect reset scenarios** by checking for `RST_TAG: triggering`, `RST_TAG HSLE starting reset`, and `PPR check: GOT RESET CF9` in testbench.log. Do this ALWAYS -- even when Stage 6 is incomplete or Stage 7 is missing (BIOS-initiated resets cause partial Stage 6). Load the appropriate reset flow file:
    - Cold reset detected: **`cold_reset_flow.txt`**
    - Warm reset detected (CF9=0x6, AWR, SWR): **`warm_reset_flow.txt`**
    - Global reset detected (gbl_etr3=1, GBL_RST_WARN): **`global_reset_flow.txt`**

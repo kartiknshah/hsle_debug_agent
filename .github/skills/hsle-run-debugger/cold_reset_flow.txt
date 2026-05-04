@@ -65,16 +65,39 @@
   [ ] STAGE 6: BIOS boot complete (BIOS_TAIL_ACED_FFFFFF00 or ExitBootServices)
   [ ] STAGE 7: First OS boot -- PPR_TEST_DONE or SVOS/CentOS login
 
-  If ANY Stage 0-7 milestone is missing, treat as normal cold boot failure
-  per flow.txt -- do NOT proceed to reset stage analysis.
+  If ANY Stage 0-7 milestone is missing, check for reset markers FIRST:
+    grep -n "PPR check: GOT RESET CF9|RST_TAG HSLE starting reset" testbench.log
+  If reset markers are found with line numbers BEFORE or NEAR the missing milestones,
+  this is a BIOS-initiated reset (Stage 6 incomplete + Stage 7 not reached is EXPECTED).
+  Proceed to reset stage analysis (Stages 8-13).
+  If NO reset markers are found, treat as normal cold boot failure per flow.txt.
 
 ================================================================================
   STAGE 8:  RESET TRIGGER
 ================================================================================
 
-  Entry condition: First PPR_TEST_DONE (first OS run complete) observed.
-  The post-setup script (e.g. reboot_cold_reset.simics) detects completion
-  and dispatches the reset trigger via os_reset_triggers.simics.
+  Entry condition: A cold reset is triggered. This can happen in TWO ways:
+
+  (A) POST-OS-BOOT RESET (most common):
+      First PPR_TEST_DONE observed (first OS run complete).
+      The post-setup script (e.g. reboot_cold_reset.simics) detects completion
+      and dispatches the reset trigger via os_reset_triggers.simics.
+
+  (B) BIOS-INITIATED RESET (during Stage 6):
+      BIOS itself triggers CF9=0xE during boot (e.g., MRC training requires
+      power cycle, fuse mismatch, memory topology change). This happens BEFORE
+      PPR_TEST_DONE and BEFORE OS boot. Stage 6 will be PARTIAL (incomplete)
+      and Stage 7 will be NOT REACHED.
+      KEY EVIDENCE: PPR check: GOT RESET CF9 14 appears BEFORE any PPR_TEST_DONE.
+      Common sub-stages for BIOS-initiated cold reset:
+        - Stage 6.2 (MRC/pre-memory PEI): Most common.
+        - Stage 6.1 (Early PEI): During silicon policy setup.
+
+  DETECTION LOGIC:
+    1. grep -n "PPR check: GOT RESET CF9" testbench.log
+    2. grep -n "PPR_TEST_DONE" testbench.log
+    3. If CF9 line < PPR_TEST_DONE line -> BIOS-initiated (path B)
+    4. If CF9 line > PPR_TEST_DONE line -> Post-OS-boot (path A)
 
   8.0  FIRST BOOT COMPLETION MARKER
   |-- KEY GREP: PPR_TEST_DONE

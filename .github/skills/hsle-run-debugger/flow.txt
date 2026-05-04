@@ -537,6 +537,19 @@ Driven by: Simics VP x86 ISS executing BIOS from IFWI flash image
    |     "[reset_phase_marker.simics] END_OF_BIOS"
    |       Immediately follows End of RESET_PHASE_7; also absent in SVOS runs.
    |
+   |
+   |-- 6.6 BIOS-INITIATED RESET (may occur during any sub-phase)
+   |     BIOS can trigger a cold reset (CF9=0xE) during boot, typically during:
+   |       - Stage 6.2 (MRC/PEI): MRC training requires power cycle, fuse mismatch
+   |       - Stage 6.1 (Early PEI): Silicon policy requires reset
+   |     When this occurs:
+   |       - Stage 6 status = PARTIAL (incomplete, last sub-phase reached is noted)
+   |       - Stage 7 = NOT REACHED (no OS boot in this cycle)
+   |       - PPR check: GOT RESET CF9 14 appears BEFORE PPR_TEST_DONE
+   |       - Run continues to reset Stages 8-13 (see cold_reset_flow.txt)
+   |     This is EXPECTED behavior for first-boot resets, not a failure.
+   |     KEY GREP: PPR check: GOT RESET CF9
+   |
    +-- BIOS completes, hands off to OS bootloader
 
 

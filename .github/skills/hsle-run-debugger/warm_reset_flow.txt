@@ -69,16 +69,33 @@
   [ ] STAGE 6: BIOS boot complete (BIOS_TAIL_ACED_FFFFFF00 or ExitBootServices)
   [ ] STAGE 7: First OS boot -- PPR_TEST_DONE or SVOS/CentOS login
 
-  If ANY Stage 0-7 milestone is missing, treat as normal cold boot failure
-  per flow.txt -- do NOT proceed to reset stage analysis.
+  If ANY Stage 0-7 milestone is missing, check for reset markers FIRST:
+    grep -n "PPR check: GOT RESET CF9|RST_TAG HSLE starting reset" testbench.log
+  If reset markers are found with line numbers BEFORE or NEAR the missing milestones,
+  this is a BIOS-initiated reset (Stage 6 incomplete + Stage 7 not reached is EXPECTED).
+  Proceed to reset stage analysis (Stages 8-13).
+  If NO reset markers are found, treat as normal cold boot failure per flow.txt.
 
 ================================================================================
   STAGE 8:  WARM RESET TRIGGER
 ================================================================================
 
-  Entry condition: First PPR_TEST_DONE (first OS run complete) observed.
-  The post-setup script (reboot_warm_reset.simics) detects completion
-  and dispatches the warm reset trigger via os_reset_triggers.simics.
+  Entry condition: A warm reset is triggered. This can happen in TWO ways:
+
+  (A) POST-OS-BOOT RESET (most common):
+      First PPR_TEST_DONE observed (first OS run complete).
+      The post-setup script (reboot_warm_reset.simics) detects completion
+      and dispatches the warm reset trigger via os_reset_triggers.simics.
+
+  (B) BIOS-INITIATED RESET (during Stage 6):
+      BIOS itself triggers CF9=0x6 during boot. This happens BEFORE
+      PPR_TEST_DONE and BEFORE OS boot. Stage 6 will be PARTIAL
+      and Stage 7 will be NOT REACHED.
+      KEY EVIDENCE: PPR check: GOT RESET CF9 6 appears BEFORE any PPR_TEST_DONE
+      and gbl_etr3 == 0 (otherwise it would be global, not warm).
+
+  DETECTION LOGIC: Same as cold_reset_flow.txt -- compare CF9 reset line
+  number against first PPR_TEST_DONE line number.
 
   8.0  FIRST BOOT COMPLETION MARKER
   |-- KEY GREP: PPR_TEST_DONE

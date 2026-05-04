@@ -122,6 +122,37 @@ to verify correct global-specific behavior.
 
 ---
 
+## Standalone Python Scripts
+
+The debug analysis is also available as standalone Python scripts in:
+```
+.github/skills/hsle-run-debugger/scripts/
+```
+
+These scripts implement the same logic as the agent's step-by-step procedure and
+can be run directly from the command line:
+
+```bash
+# Full analysis (milestone extraction + reset detection + summary generation)
+python3 .github/skills/hsle-run-debugger/scripts/main.py /path/to/hsle_run.0
+
+# With output path override (when run directory is read-only)
+python3 .github/skills/hsle-run-debugger/scripts/main.py /path/to/run --output /tmp/summary.txt
+
+# Verbose mode (print milestone details to stdout)
+python3 .github/skills/hsle-run-debugger/scripts/main.py /path/to/run --verbose
+```
+
+Modules:
+- `main.py` — CLI entry point; orchestrates milestone extraction → reset detection → summary
+- `milestone_extractor.py` — Stage 0-7 milestone extraction from testbench.log
+- `reset_detector.py` — Reset cycle detection and classification (cold/warm/global, OS/BIOS/platform)
+- `summary_generator.py` — Structured debug summary file generation
+
+Requirements: Python 3.8+, no external dependencies.
+
+---
+
 ## Procedure
 
 ### Step 1 — Locate and Validate testbench.log
@@ -149,7 +180,7 @@ grep "PPR_TEST_DONE" <run_dir>/testbench.log | head -1
 grep -c "RST_TAG HSLE starting reset procedures" <run_dir>/testbench.log
 ```
 
-If resets are present, also load `reset_flow.txt` alongside this skill for Stage 8.5 guidance.
+If resets are present, also load `the appropriate reset flow file (cold_reset_flow.txt / warm_reset_flow.txt / global_reset_flow.txt)` alongside this skill for Stage 8.5 guidance.
 
 If testbench.log is gzipped, use `zgrep` and `zcat` instead of `grep` and `cat` in all
 subsequent steps.
@@ -184,6 +215,17 @@ grep -n "RTI:\|RESET_PHASE\|hsle.simics\|IDI Mux\|Hybrid Core\|UCLK\|Waiting for
 
 Compare extracted milestones against this checklist. For each stage, verify the **required
 markers** appear. The first stage with missing markers is the failure point.
+
+> **IMPORTANT -- BIOS-initiated reset exception**: If Stage 6 is PARTIAL (some sub-stage
+> milestones present but not all) and Stage 7 is completely missing, check for reset markers
+> BEFORE declaring Stage 6 as the failure point:
+> ```bash
+> grep -n "PPR check: GOT RESET CF9\|RST_TAG HSLE starting reset" > ```
+> If reset markers exist with line numbers NEAR or AFTER the last Stage 6 milestone,
+> BIOS triggered a reset during boot. This is EXPECTED behavior (e.g., MRC training
+> cold reset, fuse mismatch). Mark Stage 6 as PARTIAL (not FAIL), Stage 7 as NOT REACHED,
+> and proceed to Step 5b for reset cycle analysis. The partial Stage 6 + missing Stage 7
+> is the entry to the reset flow, not a failure.
 
 #### STAGE 0: SPARK Bootstrap
 | Marker | Grep pattern | Indicates |
@@ -422,7 +464,7 @@ grep -e RST_TAG -e "PPR check: GOT RESET" "$TBLOG"
 | Post-reset pass | `PPR_TEST_DONE` (second occurrence) | Reset cycle passed |
 
 > **When Stage 8.5 is the failing stage** (reset triggered but run hangs/dies afterward):
-> Load **`reset_flow.txt`** for the complete reset type catalog, log signatures, and
+> Load **`the appropriate reset flow file (cold_reset_flow.txt / warm_reset_flow.txt / global_reset_flow.txt)`** for the complete reset type catalog, log signatures, and
 > failure analysis table. Then drill into the specific post-reset stage that failed
 > (Stage 5/6/7 for the second boot cycle), using the same checklists above.
 
@@ -548,7 +590,7 @@ grep -i "not found\|No such file\|does not exist\|FileNotFoundError" "$TBLOG" | 
 
 #### For reset cycle failures (Stage 8.5):
 
-> **Read `reset_flow.txt` first** for the complete reset type catalog and HW signal reference.
+> **Read `the appropriate reset flow file (cold_reset_flow.txt / warm_reset_flow.txt / global_reset_flow.txt)` first** for the complete reset type catalog and HW signal reference.
 
 ```bash
 # Step A: Confirm reset detected and classify type
@@ -631,7 +673,9 @@ Match findings against this catalog of known failure signatures:
 
 ### Step 5b — Reset Cycle Detection and Analysis
 
-After completing Stage 0-7 analysis (or if all stages pass), check for reset cycles:
+After completing Stage 0-7 analysis, check for reset cycles. Do this ALWAYS -- not
+just when all stages pass. A BIOS-initiated reset will cause Stage 6 to be PARTIAL and
+Stage 7 to be NOT REACHED, which is expected behavior for reset runs:
 
 ```bash
 # Check if this is a reset run (any RST_TAG: triggering marker)

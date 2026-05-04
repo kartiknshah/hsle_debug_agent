@@ -67,17 +67,34 @@
   [ ] STAGE 6: BIOS boot complete (BIOS_TAIL_ACED_FFFFFF00 or ExitBootServices)
   [ ] STAGE 7: First OS boot -- PPR_TEST_DONE or SVOS login
 
-  If ANY Stage 0-7 milestone is missing, treat as normal cold boot failure
-  per flow.txt -- do NOT proceed to reset stage analysis.
+  If ANY Stage 0-7 milestone is missing, check for reset markers FIRST:
+    grep -n "PPR check: GOT RESET CF9|RST_TAG HSLE starting reset" testbench.log
+  If reset markers are found with line numbers BEFORE or NEAR the missing milestones,
+  this is a BIOS-initiated reset (Stage 6 incomplete + Stage 7 not reached is EXPECTED).
+  Proceed to reset stage analysis (Stages 8-13).
+  If NO reset markers are found, treat as normal cold boot failure per flow.txt.
 
 ================================================================================
   STAGE 8:  GLOBAL RESET TRIGGER
 ================================================================================
 
-  Entry condition: First PPR_TEST_DONE observed + SVOS test complete.
-  The svos_post.simics script waits for SVOS to finish, then
-  os_cold_reboot_trigger.simics sets up the next PPR_TEST_DONE wait.
-  The SVOS ACPI global reset test writes CF9 with gbl_etr3=1.
+  Entry condition: A global reset is triggered. This can happen in THREE ways:
+
+  (A) POST-OS-BOOT RESET (most common):
+      First PPR_TEST_DONE observed + SVOS test complete.
+      The svos_post.simics or os_reset_triggers.simics dispatches the global
+      reset. SVOS ACPI test writes CF9 with gbl_etr3=1.
+
+  (B) BIOS-INITIATED RESET (during Stage 6):
+      BIOS itself triggers CF9 write with gbl_etr3=1 during boot.
+      Stage 6 will be PARTIAL and Stage 7 will be NOT REACHED.
+
+  (C) PLATFORM-INJECTED RESET (AGR):
+      AGR event injected by E2E test framework after first boot completes.
+      Does not use CF9 -- uses RST_TAG AGR event triggered instead.
+
+  DETECTION LOGIC: Same as cold_reset_flow.txt -- compare reset marker line
+  number against first PPR_TEST_DONE line number.
 
   8.0  FIRST BOOT COMPLETION MARKER
   |-- KEY GREP: PPR_TEST_DONE
