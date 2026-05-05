@@ -39,12 +39,12 @@ from datetime import datetime
 # --- Stage 0-7: First boot milestones (from flow.txt) ---
 STAGE_PATTERNS = {
     0: [
-        ("spark_session", re.compile(r"spark_session\.log|SPARK.*session", re.I), True),
+        ("spark_session", re.compile(r"spark_session\.log|SPARK.*[Ss]ession|SPARK Version:", re.I), True),
         ("zebu_config", re.compile(r"ZSE5_DMR_MCP|ZeBu.*[Cc]onfig|zRci.*init|designName", re.I), True),
     ],
     1: [
-        ("emu_log_init", re.compile(r"\[emu\.devices\]|emu_log.*open|emulation.*init", re.I), True),
-        ("zse5_device", re.compile(r"ZSE5.*device|zRci.*device|zRci_init", re.I), True),
+        ("emu_log_init", re.compile(r"\[emu\.devices[\ \]]|emu_log.*open|emulation.*init|determine_model\.py", re.I), True),
+        ("zse5_device", re.compile(r"ZSE5.*device|zRci.*device|zRci_init|model_build_cfg|mcp_1s_ici", re.I), True),
     ],
     2: [
         ("model_init", re.compile(r"model.*loaded|IDI.*link|socket.*config|hsle.*model", re.I), True),
@@ -58,9 +58,9 @@ STAGE_PATTERNS = {
         ("vp_create", re.compile(r"processor.*creat|VP.*creat|x86.*creat|cpu.*object", re.I), False),
     ],
     5: [
-        ("reset_phase_1", re.compile(r"RESET_PHASE_1\b"), True),
-        ("reset_phase_3", re.compile(r"RESET_PHASE_3\b"), True),
-        ("reset_phase_6", re.compile(r"RESET_PHASE_6\b"), True),
+        ("reset_phase_1", re.compile(r"RESET_PHASE_1\b"), False),  # optional: absent in fmod runs
+        ("reset_phase_3", re.compile(r"RESET_PHASE_3\b"), False),  # optional: absent in fmod runs
+        ("reset_phase_6", re.compile(r"RESET_PHASE_6\b"), False),  # optional: absent in fmod runs
         ("idi_mux_enable", re.compile(r"IDI.*[Mm]ux.*enabl"), True),
     ],
     6: [
@@ -667,6 +667,10 @@ def _validate_flow_type(cycle):
 
 def _cold_boot_result(stages):
     """Overall result for normal cold boot."""
+    # PASS OVERRIDE: PPR_TEST_DONE (Stage 7 PASS) = definitive run completion.
+    # Handles fmod runs where Stage 0/1/5 RTL patterns are absent.
+    if 7 in stages and stages[7].status == "PASS":
+        return "PASS"
     for s in range(8):
         if s in stages and stages[s].status in ("FAIL", "NOT_REACHED"):
             return "FAIL"
