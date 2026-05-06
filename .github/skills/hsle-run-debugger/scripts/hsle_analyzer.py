@@ -28,6 +28,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
+from pathlib import Path
 
 from output_paths import default_summary_output_path, ensure_parent_dir, extract_bios_id
 
@@ -125,7 +126,7 @@ RESET_PATTERNS = {
 }
 
 # Lines to skip (noise from wait-for-log registrations, hap callbacks)
-NOISE_RE = re.compile(r"wait-for-log|Watching for|Expected.*pattern|hap_callback")
+NOISE_RE = re.compile(r"wait-for-|Watching for|Expected.*pattern|hap_callback")
 
 # FAST PRE-FILTER: Single regex of all critical keywords.
 # Only lines matching this get expensive individual pattern checks.
@@ -322,6 +323,7 @@ def analyze_run(run_dir, generate_summary=False, output_path=None):
     
     # Build stage results
     stages = _build_stage_results(stage_found)
+    _normalize_stage6_completion(stages)
     
     # Build reset cycles
     cycles = _assemble_cycles(reset_events, ppr_lines)
@@ -360,6 +362,8 @@ def analyze_run(run_dir, generate_summary=False, output_path=None):
         "stages": stages,
         "reset_cycles": cycles,
         "summary": summary_info,
+        "run_dir": run_dir,
+        "log_path": log_path,
     }
     
     # Generate summary file if requested
@@ -420,6 +424,23 @@ def _build_stage_results(stage_found):
         results[stage] = StageResult(stage=stage, status=status,
                                      milestones=milestones, missing=missing)
     return results
+
+
+def _normalize_stage6_completion(stages):
+    """Downgrade Stage 6 when BIOS completion markers were never observed."""
+    s6 = stages.get(6)
+    s7 = stages.get(7)
+    if not s6 or s6.status != "PASS":
+        return
+
+    completion_markers = {"exit_boot_svc", "bios_aced"}
+    has_bios_completion = any(m.substage in completion_markers for m in s6.milestones)
+
+    # If BIOS completion was never observed and Stage 7 did not pass, Stage 6 is partial.
+    if not has_bios_completion and (not s7 or s7.status != "PASS"):
+        s6.status = "PARTIAL"
+        if "bios_completion_marker" not in s6.missing:
+            s6.missing.append("bios_completion_marker")
 
 
 def _assemble_cycles(events, ppr_lines):
@@ -678,6 +699,8 @@ def _cold_boot_result(stages):
         return "PASS"
     if 6 in stages and stages[6].status == "PARTIAL":
         return "FAIL"
+    if 7 in stages and stages[7].status == "PARTIAL":
+        return "FAIL"
     return "PASS"
 
 
@@ -698,134 +721,299 @@ def _reset_result(stages, cycles, ppr_lines):
 # ===========================================================================
 
 def _write_summary(analysis, output_path=None):
-    """Write structured summary file."""
-    stages = analysis["stages"]
-    cycles = analysis["reset_cycles"]
+    """Write structured summary file from template files in templates/ directory."""
     info = analysis["summary"]
     run_dir = info["run_dir"]
-    result = info["result"]
 
     if output_path is None:
         output_path = default_summary_output_path(run_dir)
     else:
         output_path = ensure_parent_dir(output_path)
 
-    sep = "=" * 80
-    L = []
-    L.append(sep)
-    L.append("  HSLE RUN DEBUG SUMMARY")
-    L.append(sep)
-    L.append("")
-    L.append(f"  Run Directory  : {run_dir}")
-    L.append(f"  Analysis Date  : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    L.append(f"  Log Lines      : {info['total_lines']:,}")
-    L.append(f"  results.log    : {info['results_log'] or 'NOT FOUND'}")
-    L.append(f"  PPR_TEST_DONE  : {info['ppr_total_count']} occurrence(s)")
-
-    bios_version = extract_bios_id(run_dir)
-    L.append(f"  BIOS Version   : {bios_version}")
-
-    if cycles:
-        types = " -> ".join(f"{c.reset_type}({c.trigger_source})" for c in cycles)
-        L.append(f"  Reset Cycles   : {len(cycles)}")
-        L.append(f"  Reset Chain    : {types}")
-        L.append(f"  Reset Origin   : {info['reset_origin']}")
-        scenario = "Back-to-back Reset" if len(cycles) > 1 else "Single Reset"
-        L.append(f"  Scenario       : {scenario}")
+    if analysis["reset_cycles"]:
+        content = _render_reset_template(analysis)
     else:
-        L.append("  Scenario       : Normal Cold Boot")
-
-    if info.get("rca_check_found"):
-        L.append(f"  rca_check      : {info['rca_check_found']}")
-    L.append(f"  Overall Result : {result}")
-    L.append("")
-
-    L.append(sep)
-    L.append("  FIRST BOOT STAGES (0-7)")
-    L.append(sep)
-    L.append("")
-    for s in range(8):
-        if s in stages:
-            r = stages[s]
-            status = r.status
-            if cycles and info["reset_origin"] == "BIOS_INITIATED":
-                if s == 6 and r.status == "PARTIAL":
-                    status = "PARTIAL (BIOS-initiated reset during this stage)"
-                elif s == 7 and r.status in ("NOT_REACHED", "FAIL"):
-                    status = "NOT REACHED (expected: reset before OS boot)"
-            line_info = ""
-            if r.milestones:
-                last = r.milestones[-1]
-                line_info = f" @ line {last.line_number} ({last.substage})"
-            miss = f"  [MISSING: {', '.join(r.missing)}]" if r.missing else ""
-            L.append(f"  Stage {s}: {status}{line_info}{miss}")
-    L.append("")
-
-    if cycles:
-        L.append(sep)
-        L.append("  RESET CYCLE ANALYSIS")
-        L.append(sep)
-        for c in cycles:
-            L.append("")
-            L.append(f"  --- Cycle {c.cycle_number}: {c.reset_type} ({c.trigger_source}) ---")
-            L.append(f"  Status         : {c.status}")
-            L.append(f"  CF9 Value      : {c.cf9_value or 'N/A'}")
-            L.append(f"  Trigger        : line {c.trigger_line} | {c.trigger_content[:100]}")
-            L.append("")
-            L.append(f"    Stage 8  Trigger          : line {c.trigger_line}")
-            L.append(f"    Stage 9  HW Entry         : {'line ' + str(c.hsle_start_reset_line) if c.hsle_start_reset_line else 'NOT REACHED'}")
-            L.append(f"             BEGIN_RESET_FLOW  : {'line ' + str(c.begin_reset_flow_line) if c.begin_reset_flow_line else 'NOT REACHED'}")
-            L.append(f"    Stage 10 Primecode Start  : {'line ' + str(c.primecode_start_line) if c.primecode_start_line else 'NOT REACHED'}")
-            L.append(f"             BIOS First Fetch  : {'line ' + str(c.bios_first_fetch_line) if c.bios_first_fetch_line else 'NOT REACHED'}")
-            L.append(f"    Stage 11 BIOS ACED        : {'line ' + str(c.bios_aced_line) if c.bios_aced_line else 'NOT REACHED'}")
-            L.append(f"    Stage 12 PPR_TEST_DONE    : {'line ' + str(c.ppr_test_done_line) if c.ppr_test_done_line else 'NOT REACHED'}")
-
-            if c.flow_checks:
-                L.append(f"    Flow Validation ({c.reset_type}):")
-                for k, v in c.flow_checks.items():
-                    flag = "OK" if v == "PASS" else v
-                    L.append(f"      {k}: {flag}")
-
-            if c.status == "FAIL":
-                L.append("")
-                L.append(f"  *** FAILURE at Stage {c.failing_stage}{('.' + c.failing_substage) if c.failing_substage else ''} ***")
-                L.append(f"  Detail: {c.failure_detail}")
-                L.append("")
-                L.append("  Recommended Actions:")
-                L.append(_reset_recommendations(c))
-        L.append("")
-        _append_reset_template_sections(L, cycles)
-    elif result == "FAIL":
-        L.append(sep)
-        L.append("  FAILURE ANALYSIS")
-        L.append(sep)
-        L.append("")
-        for s in range(8):
-            if s in stages and stages[s].status in ("FAIL", "PARTIAL"):
-                r = stages[s]
-                L.append(f"  Failing Stage  : {s}")
-                L.append(f"  Status         : {r.status}")
-                if r.missing:
-                    L.append(f"  Missing Markers: {', '.join(r.missing)}")
-                if r.milestones:
-                    last = r.milestones[-1]
-                    L.append(f"  Last Milestone : {last.substage} at line {last.line_number}")
-                    L.append(f"  Last Content   : {last.content[:150]}")
-                L.append("")
-                L.append("  Recommended Actions:")
-                L.append(_cold_boot_recommendations(s))
-                break
-        L.append("")
-
-    L.append(sep)
-    L.append("  END OF HSLE RUN DEBUG SUMMARY")
-    L.append(sep)
-
-    content = "\n".join(L) + "\n"
+        content = _render_cold_boot_template(analysis)
 
     with open(output_path, "w") as f:
         f.write(content)
     return output_path
+
+
+def _templates_dir():
+    return Path(__file__).resolve().parent.parent / "templates"
+
+
+def _load_template(template_name):
+    return (_templates_dir() / template_name).read_text(errors="replace")
+
+
+def _stage_display(stages, stage_num):
+    r = stages.get(stage_num)
+    if not r:
+        return "NOT REACHED"
+    if r.milestones:
+        last = r.milestones[-1]
+        if r.missing:
+            return f"{r.status} @ line {last.line_number} ({last.substage}) [MISSING: {', '.join(r.missing)}]"
+        return f"{r.status} @ line {last.line_number} ({last.substage})"
+    if r.missing:
+        return f"{r.status} [MISSING: {', '.join(r.missing)}]"
+    return r.status
+
+
+def _cold_boot_failure(stages):
+    for s in range(8):
+        if s in stages and stages[s].status in ("FAIL", "PARTIAL"):
+            r = stages[s]
+            sub = r.milestones[-1].substage if r.milestones else "N/A"
+            return s, sub
+    return "NONE", "N/A"
+
+
+def _extract_serconsole_text(log_path):
+    if not log_path:
+        return ""
+    out = []
+    with _open_log(log_path) as fh:
+        for line in fh:
+            m = re.search(r"serconsole\.con>\s?(.*)", line)
+            if m:
+                out.append(m.group(1).strip())
+    return "\n".join(out)
+
+
+def _run_bios_issue_analyzer(log_path):
+    """Invoke bios-issue-analyzer decoder scripts for automatic BIOS analysis."""
+    if not log_path:
+        return "Log path unavailable; BIOS analysis not executed."
+
+    serconsole_text = _extract_serconsole_text(log_path)
+    if not serconsole_text.strip():
+        return "No serconsole.con output found after BIOS stage; possible BIOS fetch/setup failure."
+
+    scripts_dir = Path(__file__).resolve().parents[2] / "bios-issue-analyzer" / "scripts"
+    if not scripts_dir.exists():
+        return "bios-issue-analyzer scripts directory not found."
+
+    try:
+        sys.path.insert(0, str(scripts_dir))
+        from decode_ewl import EWLDecoder  # type: ignore
+
+        decoder = EWLDecoder(
+            db_path=str(scripts_dir / "ewl_codes_database.json"),
+            rc_db_path=str(scripts_dir / "rc_fatal_errors_database.json"),
+        )
+        codes = decoder.parse_log(serconsole_text)
+        summary = decoder.generate_summary(codes).strip()
+        if not codes:
+            return (
+                "Invoked bios-issue-analyzer decoder automatically.\n"
+                "No EWL/IPSD/RC_FATAL signatures were found in serconsole output."
+            )
+        return "Invoked bios-issue-analyzer decoder automatically.\n" + summary
+    except Exception as exc:
+        return f"Automatic bios-issue-analyzer invocation failed: {str(exc)[:200]}"
+
+
+def _cold_root_cause(stage):
+    mapping = {
+        6: "  BIOS boot did not complete to ExitBootServices/BIOS_TAIL_ACED, indicating a BIOS-side stall in Stage 6.",
+        7: "  BIOS completed but OS/test workload did not reach PPR_TEST_DONE, indicating post-BIOS boot failure.",
+    }
+    return mapping.get(stage, "  Failure occurred before run completion; inspect stage markers and surrounding logs.")
+
+
+def _cold_log_evidence(stages, failing_stage):
+    if not isinstance(failing_stage, int):
+        return "  - No failing stage identified."
+    r = stages.get(failing_stage)
+    if not r:
+        return "  - Stage data unavailable."
+    lines = []
+    if r.milestones:
+        last = r.milestones[-1]
+        lines.append(f"  - Stage {failing_stage} last milestone at line {last.line_number}: {last.substage}")
+        lines.append(f"  - Content: {last.content[:150]}")
+    if r.missing:
+        lines.append(f"  - Missing required markers: {', '.join(r.missing)}")
+    if not lines:
+        lines.append("  - No milestones captured for failing stage.")
+    return "\n".join(lines)
+
+
+def _render_cold_boot_template(analysis):
+    stages = analysis["stages"]
+    info = analysis["summary"]
+    run_dir = info["run_dir"]
+    log_path = analysis.get("log_path")
+    failing_stage, failing_substage = _cold_boot_failure(stages)
+
+    stage8 = "PASS" if info["result"] == "PASS" else "NOT REACHED"
+
+    last_console_line = "N/A"
+    signature = "N/A"
+    evidence = "  - N/A"
+    recommendations = "  - No action required."
+    root_cause = "  N/A"
+    bios_analysis = "N/A"
+    if isinstance(failing_stage, int):
+        r = stages[failing_stage]
+        if r.milestones:
+            last_console_line = r.milestones[-1].content[:150]
+        signature = f"Stage {failing_stage} {r.status}"
+        evidence = _cold_log_evidence(stages, failing_stage)
+        root_cause = _cold_root_cause(failing_stage)
+        recommendations = _cold_boot_recommendations(failing_stage)
+        if failing_stage in (6, 7):
+            bios_analysis = _run_bios_issue_analyzer(log_path)
+
+    placeholders = {
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "run_path": run_dir,
+        "test_name": Path(run_dir).name,
+        "hsle_model": "N/A",
+        "os_image": "N/A",
+        "log_file": log_path or "N/A",
+        "log_lines": f"{info['total_lines']:,}",
+        "bios_version": extract_bios_id(run_dir),
+        "result": info["result"],
+        "stage0": _stage_display(stages, 0),
+        "stage1": _stage_display(stages, 1),
+        "stage2": _stage_display(stages, 2),
+        "stage3": _stage_display(stages, 3),
+        "stage4": _stage_display(stages, 4),
+        "stage5": _stage_display(stages, 5),
+        "stage6": _stage_display(stages, 6),
+        "stage7": _stage_display(stages, 7),
+        "stage8": stage8,
+        "failing_stage": str(failing_stage),
+        "failing_substage": str(failing_substage),
+        "last_console_line": last_console_line,
+        "last_post_code": "N/A",
+        "last_cycle": "N/A",
+        "timeout_cycle": "N/A",
+        "silence_gap": "N/A",
+        "signature": signature,
+        "evidence": evidence,
+        "root_cause": root_cause,
+        "bios_analysis": bios_analysis,
+        "recommendations": recommendations,
+        "log_evidence": _cold_log_evidence(stages, failing_stage),
+    }
+
+    return _load_template("summary_cold_boot.txt").format(**placeholders)
+
+
+def _reset_failure(cycles):
+    for c in cycles:
+        if c.status == "FAIL":
+            return c
+    return None
+
+
+def _render_additional_reset_cycles(cycles):
+    blocks = []
+    for c in cycles[1:]:
+        blocks.append(
+            "\n".join([
+                f"  STAGE PROGRESS — RESET CYCLE {c.cycle_number}",
+                "  -----------------------------------------------",
+                f"  Stage 8  (Reset Trigger)        : {'PASS' if c.trigger_line else 'FAIL'}   Reset Type: {c.reset_type}",
+                f"  Stage 9  (Reset Hardware Entry) : {'PASS' if c.begin_reset_flow_line else 'FAIL'}",
+                f"  Stage 10 (Nth Boot RTL)         : {'PASS' if c.bios_first_fetch_line else 'FAIL'}",
+                f"  Stage 11 (Nth BIOS Boot)        : {'PASS' if c.bios_aced_line else 'FAIL'}",
+                f"  Stage 12 (Nth OS Boot)          : {'PASS' if c.ppr_test_done_line else 'FAIL'}",
+                f"  Stage 13 (Test Termination)     : {'PASS' if c.auto_exit_line else 'NOT REACHED'}",
+            ])
+        )
+    return "\n\n".join(blocks) if blocks else ""
+
+
+def _render_reset_template(analysis):
+    stages = analysis["stages"]
+    cycles = analysis["reset_cycles"]
+    info = analysis["summary"]
+    run_dir = info["run_dir"]
+    log_path = analysis.get("log_path")
+    failing = _reset_failure(cycles)
+    first_cycle = cycles[0]
+
+    failing_stage = failing.failing_stage if failing else "NONE"
+    failing_substage = failing.failing_substage if (failing and failing.failing_substage) else "N/A"
+    signature = _cycle_signature(failing) if failing else "N/A"
+    evidence = "\n".join(f"    {x}" for x in _cycle_evidence_lines(failing)) if failing else "    N/A"
+    root_cause = _cycle_root_cause(failing) if failing else "  All reset cycles passed."
+    recommendations = _reset_recommendations(failing) if failing else "  - No failure-specific recommendations."
+    log_evidence = "\n".join(f"  - {x}" for x in _cycle_log_evidence(failing)) if failing else "  - No failing cycle."
+
+    bios_analysis = "N/A"
+    if failing and failing.failing_stage in (6, 7, 11):
+        bios_analysis = _run_bios_issue_analyzer(log_path)
+
+    placeholders = {
+        "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "reset_type": first_cycle.reset_type,
+        "run_path": run_dir,
+        "test_name": Path(run_dir).name,
+        "hsle_model": "N/A",
+        "os_image": "N/A",
+        "log_file": log_path or "N/A",
+        "log_lines": f"{info['total_lines']:,}",
+        "bios_version": extract_bios_id(run_dir),
+        "result": info["result"],
+        "reset_trigger": first_cycle.trigger_source,
+        "post_setup_script": "N/A",
+        "num_resets": str(len(cycles)),
+        "reset_sequence": " -> ".join(f"{c.reset_type}({c.trigger_source})" for c in cycles),
+        "stage0": _stage_display(stages, 0),
+        "stage1": _stage_display(stages, 1),
+        "stage2": _stage_display(stages, 2),
+        "stage3": _stage_display(stages, 3),
+        "stage4": _stage_display(stages, 4),
+        "stage5": _stage_display(stages, 5),
+        "stage6": _stage_display(stages, 6),
+        "stage7": _stage_display(stages, 7),
+        "reset_cycle_num": str(first_cycle.cycle_number),
+        "stage8": "PASS" if first_cycle.trigger_line else "FAIL",
+        "stage9": "PASS" if first_cycle.begin_reset_flow_line else "FAIL",
+        "stage10": "PASS" if first_cycle.bios_first_fetch_line else "FAIL",
+        "stage11": "PASS" if first_cycle.bios_aced_line else "FAIL",
+        "stage12": "PASS" if first_cycle.ppr_test_done_line else "FAIL",
+        "stage13": "PASS" if first_cycle.auto_exit_line else "NOT REACHED",
+        "additional_reset_cycles": _render_additional_reset_cycles(cycles),
+        "failing_stage": str(failing_stage),
+        "failing_substage": str(failing_substage),
+        "reset_origin": info["reset_origin"],
+        "first_boot_stage": _stage_display(stages, 6),
+        "bios_substage": str(failing_substage),
+        "cf9_value": first_cycle.cf9_value or "N/A",
+        "gbl_etr3": "N/A",
+        "reset_class": first_cycle.reset_type,
+        "vp_quiesce": "PASS" if first_cycle.hsle_start_reset_line else "FAIL",
+        "cbb_event": "PASS" if first_cycle.cbb_event_line else "FAIL",
+        "pltrst_or_gblrst": "PASS" if (first_cycle.pltrst_sync_line or first_cycle.gbl_rst_warn_line) else "FAIL",
+        "power_signals": "PASS" if first_cycle.pwrgood_deassert_line else "N/A",
+        "fuse_reload": "YES" if first_cycle.fuse_reload_line else "NO",
+        "icecode_reload": "YES" if first_cycle.icecode_reload_line else "NO",
+        "fake_go_rsp": "YES" if first_cycle.fake_go_rsp_line else "NO",
+        "begin_reset_flow": "PASS" if first_cycle.begin_reset_flow_line else "FAIL",
+        "expected_ppr_count": str(len(cycles) + 1),
+        "actual_ppr_count": str(info["ppr_total_count"]),
+        "last_console_line": _last_console_output(failing) if failing else "N/A",
+        "last_post_code": "N/A",
+        "last_cycle": str(first_cycle.trigger_line),
+        "timeout_cycle": "N/A",
+        "silence_gap": "N/A",
+        "signature": signature,
+        "evidence": evidence,
+        "root_cause": root_cause,
+        "bios_analysis": bios_analysis,
+        "recommendations": recommendations,
+        "log_evidence": log_evidence,
+    }
+
+    return _load_template("summary_reset_scenario.txt").format(**placeholders)
 
 
 def _append_reset_template_sections(lines, cycles):
@@ -864,7 +1052,7 @@ def _append_reset_template_sections(lines, cycles):
         lines.append("  BIOS Issue Analysis (Stage 6/7/11 failures only)")
         lines.append("  -------------------------------------------------")
         if failing.failing_stage == 11:
-            lines.append("  BIOS boot reached second-boot fetch but did not complete. Run bios-issue-analyzer on the second-boot segment for EWL/IPSD/RC fatal/assert/post-code detail.")
+            lines.append("  BIOS boot reached second-boot fetch but did not complete. BIOS decoder is auto-invoked for this scenario; review decoded output in this section.")
         else:
             lines.append("  N/A")
         lines.append("")
@@ -978,7 +1166,7 @@ def _cold_boot_recommendations(stage):
         3: "  - Check ZeBu compilation log\n  - Verify RTL model path accessible",
         4: "  - Check Simics launch/license errors\n  - Verify VP creation logs",
         5: "  - See reset_phase_flow.txt for sub-phase analysis\n  - Check RESET_PHASE_1-6 progression\n  - Verify both imh8/imh9 symmetry",
-        6: "  - Check for BIOS-initiated reset (CF9 write during BIOS)\n  - See bios_flow.txt for sub-phases 6.0-6.6\n  - Run bios-issue-analyzer for EWL/RC Fatal/POST errors",
+        6: "  - Check for BIOS-initiated reset (CF9 write during BIOS)\n  - See bios_flow.txt for sub-phases 6.0-6.6\n  - Review auto-generated BIOS Issue Analysis section above",
         7: "  - Check serconsole for OS boot errors\n  - Verify PPR test workload config",
     }
     return recs.get(stage, "  - Inspect testbench.log around last milestone")
@@ -991,7 +1179,7 @@ def _reset_recommendations(cycle):
         8: "  - Verify post-setup script loaded\n  - Check os_reset_triggers.simics dispatch table",
         9: f"  - Check serconsole for errors before hardware entry\n  - Verify {'PLTRST_SYNC' if rtype != 'GLOBAL' else 'GBL_RST_WARN'} completion\n  - Check if VP quiesce succeeded",
         10: "  - See reset_phase_flow.txt for HWRS sub-phase detail\n  - Check BOOT_FSM stuck state (which 0x?? value)\n  - Verify both imh8/imh9 primecode symmetry",
-        11: "  - Check if IDI Mux was enabled after RESET_PHASE_6\n  - See bios_flow.txt for BIOS sub-phases\n  - Run bios-issue-analyzer on second boot log segment\n  - Check for BIOS hang vs VP/RTL handoff issue",
+        11: "  - Check if IDI Mux was enabled after RESET_PHASE_6\n  - See bios_flow.txt for BIOS sub-phases\n  - Review auto-generated BIOS Issue Analysis section above\n  - Check for BIOS hang vs VP/RTL handoff issue",
         12: "  - Check serconsole for second OS boot errors\n  - Verify PPR workload starts on second boot\n  - Check for kernel panic or OOM",
     }
     return recs.get(stage, "  - Inspect testbench.log at failure point")

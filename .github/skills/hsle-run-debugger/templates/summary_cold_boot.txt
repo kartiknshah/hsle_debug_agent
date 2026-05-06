@@ -57,7 +57,7 @@
   ----------
 {root_cause}
 
-  BIOS Issue Analysis (Stage 6/7 failures only)
+  BIOS Issue Analysis (Stage 6/7 failures only; auto-invoked)
   ----------------------------------------------
 {bios_analysis}
 

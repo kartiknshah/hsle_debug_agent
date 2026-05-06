@@ -48,6 +48,8 @@ def _cold_boot_result(stages):
         return "PASS"
     if 6 in stages and stages[6].status == "PARTIAL":
         return "FAIL"
+    if 7 in stages and stages[7].status == "PARTIAL":
+        return "FAIL"
     return "PASS"
 
 

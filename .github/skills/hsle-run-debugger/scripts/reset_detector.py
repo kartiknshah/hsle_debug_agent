@@ -126,7 +126,7 @@ PATTERNS = {
 }
 
 # Skip noise lines
-NOISE_RE = re.compile(r"wait-for-log|Watching for|Expected.*pattern|hap_callback")
+NOISE_RE = re.compile(r"wait-for-|Watching for|Expected.*pattern|hap_callback")
 
 
 def open_log(run_dir):
