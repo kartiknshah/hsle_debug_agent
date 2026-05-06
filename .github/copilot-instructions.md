@@ -40,7 +40,7 @@ DMR MCP ICI HSLE (ZeBu ZSE5) emulation runs.
 
 | Agent | Trigger | Purpose |
 |-------|---------|---------|
-| `hsle_debug` | `@hsle_debug` | Debug HSLE run failures — analyzes `testbench.log`, identifies failing stage, matches known signatures, writes structured debug summary to `hsle_debug_agent_summary.txt`. Supports normal cold boot and reset scenarios (cold/warm/global, including back-to-back resets). |
+| `hsle_debug` | `@hsle_debug` | Debug HSLE run failures — analyzes `testbench.log`, identifies failing stage, matches known signatures, writes structured debug summary into the repo-local `result/` directory. Supports normal cold boot and reset scenarios (cold/warm/global, including back-to-back resets). |
 
 ## Skills
 
@@ -60,7 +60,7 @@ When you type `@hsle_debug debug run at /nfs/...`, the agent:
    (`cold_reset_flow.txt`, `warm_reset_flow.txt`, or `global_reset_flow.txt`)
 6. For back-to-back resets, analyzes each cycle sequentially
 7. Drills into the failure zone and matches against the known signature catalog
-8. Writes a structured **HSLE Run Debug Summary** to `<run_dir>/hsle_debug_agent_summary.txt`
+8. Writes a structured **HSLE Run Debug Summary** to `result/<run_name>_hsle_debug_agent_summary.txt`
 
 ## Reset Scenario Support
 
@@ -77,10 +77,17 @@ each cycle's Stages 8-13 sequentially.
 
 ## Output
 
-The agent writes its analysis to `hsle_debug_agent_summary.txt` in the run directory.
+The agent writes its analysis to `result/<run_name>_hsle_debug_agent_summary.txt`.
 Two templates are used:
 - **Normal cold boot**: `templates/summary_cold_boot.txt` — Stages 0-8
 - **Reset scenario**: `templates/summary_reset_scenario.txt` — Stages 0-8 + reset Stages 8-13
+
+## Temporary Artifacts
+
+Any temporary or scratch artifacts created by the agent while debugging must be
+written under the repo-local `result/` directory, preferably `result/tmp/`.
+Do not create temporary Python scripts, logs, or intermediate files under `/tmp`
+or outside the repository.
 
 ## Glossary
 

@@ -10,7 +10,7 @@ Requirements:
 
 Usage:
   python3 main.py /path/to/hsle_run_directory
-  python3 main.py /path/to/hsle_run_directory --output /tmp/summary.txt
+  python3 main.py /path/to/hsle_run_directory --output ./result/custom_summary.txt
   python3 main.py /path/to/hsle_run_directory --verbose
   python3 main.py /path/to/hsle_run_directory --milestones-only
   python3 main.py /path/to/hsle_run_directory --resets-only
@@ -33,8 +33,7 @@ How It Works:
 
   3. summary_generator combines milestone and reset results into a structured
      text summary. Handles normal cold boot, single resets, and back-to-back
-     resets. Writes to hsle_debug_agent_summary.txt in the run directory
-     (falls back to current directory if write permission is denied).
+     resets. Writes to result/<run_name>_hsle_debug_agent_summary.txt.
 
 Supported Scenarios:
   - Normal cold boot (no reset)
@@ -45,7 +44,7 @@ Supported Scenarios:
   - BIOS-initiated resets (CF9 write during Stage 6 before OS boot)
 
 Output:
-  The summary file (hsle_debug_agent_summary.txt) includes:
+  The summary file in result/ includes:
   - Run metadata (directory, log size, analysis date)
   - Stage-by-stage checklist (Stages 0-7)
   - Reset cycle analysis (for each cycle: type, trigger, stage markers)

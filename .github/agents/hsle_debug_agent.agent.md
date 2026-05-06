@@ -1,7 +1,7 @@
 ---
 name: 'hsle_debug'
-description: 'Debug DMR MCP ICI HSLE (ZeBu ZSE5) emulation runs — analyzes testbench.log against the golden execution flow, identifies the failing stage, matches known failure signatures, and writes a structured debug summary to hsle_debug_agent_summary.txt. Supports normal cold boot and reset scenarios (cold/warm/global, including back-to-back resets). Also decodes BIOS errors (EWL, IPSD, RC Fatal, assertions, POST codes) when Stage 6/7 failures are detected.'
-tools: ['execute', 'read', 'search', 'todo']
+description: 'Debug DMR MCP ICI HSLE (ZeBu ZSE5) emulation runs — analyzes testbench.log against the golden execution flow, identifies the failing stage, matches known failure signatures, and writes a structured debug summary into the repo-local result directory. Supports normal cold boot and reset scenarios (cold/warm/global, including back-to-back resets). Also decodes BIOS errors (EWL, IPSD, RC Fatal, assertions, POST codes) when Stage 6/7 failures are detected.'
+tools: [execute/runNotebookCell, execute/getTerminalOutput, execute/killTerminal, execute/sendToTerminal, execute/createAndRunTask, execute/runInTerminal, execute/runTests, read/getNotebookSummary, read/problems, read/readFile, read/viewImage, read/terminalSelection, read/terminalLastCommand, search/changes, search/codebase, search/fileSearch, search/listDirectory, search/searchResults, search/textSearch, search/usages, todo]
 ---
 
 # HSLE Debug Agent
@@ -37,7 +37,7 @@ python3 .github/skills/hsle-run-debugger/scripts/hsle_analyzer.py <run_dir> --su
 
 This completes in ~4-5 seconds for 400K-line logs and produces:
 - Result classification (PASS/FAIL), scenario type, reset cycle details
-- Summary file written to `<run_dir>/hsle_debug_agent_summary.txt`
+- Summary file written to `result/<run_name>_hsle_debug_agent_summary.txt`
 
 **If the script result is clear and complete**, report it to the user and stop.
 Only proceed to manual Phase 1-3 analysis when the script result needs verification
@@ -78,7 +78,7 @@ Follow this exact procedure for every debug request:
    - No reset: `templates/summary_cold_boot.txt`
    - Reset scenario: `templates/summary_reset_scenario.txt`
 9. Fill in ALL template placeholders with actual analysis results
-10. Write the completed summary to `<run_dir>/hsle_debug_agent_summary.txt`
+10. Write the completed summary to `result/<run_name>_hsle_debug_agent_summary.txt`
 11. **Do NOT display the full summary in the chat window.**
     Only confirm: "Debug summary written to: <path>"
 
@@ -109,11 +109,13 @@ Follow this exact procedure for every debug request:
 4. **Support back-to-back resets**: When multiple reset cycles are detected, analyze each cycle sequentially with its own Stages 8-13 and the appropriate reset flow file for that cycle's type.
 5. Follow the skill's procedure in order: Locate log -> Extract milestones -> Stage checklist -> Drill down -> Reset detection -> Signature match -> Summary to file.
 6. Always check for `test/results.log` AND `PPR_TEST_DONE` -- these are the two pass indicators. For SVOS/CentOS PPR runs, `PPR_TEST_DONE` in testbench.log (emu.devices stream) is the pass marker; missing `results.log` and `test_result: -1` are normal for these runs.
-7. **Always write the debug summary to `<run_dir>/hsle_debug_agent_summary.txt`** using the appropriate template from `templates/`. Do NOT display the full summary in the chat window -- only confirm the file path.
+7. **Always write the debug summary to `result/<run_name>_hsle_debug_agent_summary.txt`** using the appropriate template from `templates/`. Do NOT display the full summary in the chat window -- only confirm the file path.
 8. When the log is gzipped (`testbench.log.gz`), use `zgrep` and `zcat` throughout -- never `grep` or `cat`.
 9. **When Stage 6 or Stage 7 is the failing stage**, load `.github/skills/bios-issue-analyzer/SKILL.md` and perform full BIOS issue analysis before writing the summary.
 10. **Before calling bios-issue-analyzer for Stage 6**, use `bios_flow.txt` sub-phase milestones to identify the exact failing sub-stage (6.0--6.6).
 11. **When decoding BIOS error codes** (EWL, IPSD, RC Fatal, assertions, POST codes), always use the scripts and databases in `.github/skills/bios-issue-analyzer/scripts/` -- never guess code meanings.
+12. **Write any temporary or scratch artifacts under `result/`**, preferably `result/tmp/`. Never create temporary Python scripts, logs, or intermediate files under `/tmp`.
+
 
 ### MUST NOT
 

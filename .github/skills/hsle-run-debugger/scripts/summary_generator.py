@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-HSLE Debug Summary Generator - Produces structured summary file.
+HSLE Debug Summary Generator - Produces structured summary files.
 
-Generates hsle_debug_agent_summary.txt from milestone and reset detection
-results. Uses templates matching the agent's output format.
+Generates summary output under the repo-local result directory from milestone
+and reset detection results. Uses templates matching the agent output format.
 """
 
-import os
 from datetime import datetime
+
+from output_paths import default_summary_output_path, ensure_parent_dir, extract_bios_id
 
 
 def generate_summary(run_dir, stage_results, reset_cycles, reset_summary,
@@ -18,7 +19,9 @@ def generate_summary(run_dir, stage_results, reset_cycles, reset_summary,
     Returns: path where summary was written.
     """
     if output_path is None:
-        output_path = os.path.join(run_dir, "hsle_debug_agent_summary.txt")
+        output_path = default_summary_output_path(run_dir)
+    else:
+        output_path = ensure_parent_dir(output_path)
     
     if not reset_cycles:
         result = _cold_boot_result(stage_results)
@@ -28,17 +31,9 @@ def generate_summary(run_dir, stage_results, reset_cycles, reset_summary,
         content = _fmt_reset(run_dir, stage_results, reset_cycles,
                              reset_summary, result)
     
-    try:
-        with open(output_path, "w") as f:
-            f.write(content)
-        return output_path
-    except PermissionError:
-        fallback = os.path.join(
-            os.getcwd(),
-            os.path.basename(run_dir) + "_hsle_debug_agent_summary.txt")
-        with open(fallback, "w") as f:
-            f.write(content)
-        return fallback
+    with open(output_path, "w") as f:
+        f.write(content)
+    return output_path
 
 
 def _cold_boot_result(stages):
@@ -95,6 +90,10 @@ def _fmt_cold_boot(run_dir, stages, info, result):
     from milestone_extractor import check_results_log
     res = check_results_log(run_dir)
     L.append(f"  results.log    : {res or 'NOT FOUND'}")
+    
+    # BIOS Version
+    bios_version = extract_bios_id(run_dir)
+    L.append(f"  BIOS Version   : {bios_version}")
     L.append(f"  PPR_TEST_DONE  : {info.get('ppr_total_count', 0)} occurrence(s)")
     L.append("")
     

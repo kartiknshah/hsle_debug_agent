@@ -14,6 +14,7 @@
   OS Image     : {os_image}
   Log File     : {log_file}
   Log Lines    : {log_lines}
+  BIOS Version   : {bios_version}
 
 ================================================================================
   RESULT:  {result}

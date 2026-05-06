@@ -15,7 +15,7 @@ Given an HSLE run directory path, the agent:
 5. For back-to-back resets, analyzes each cycle sequentially
 6. Identifies the exact failing stage and matches against known failure signatures
 7. Decodes BIOS error codes (EWL, IPSD, RC Fatal, assertions, POST codes) for Stage 6/7 failures
-8. Writes a structured debug summary to `<run_dir>/hsle_debug_agent_summary.txt`
+8. Writes a structured debug summary to `result/<run_name>_hsle_debug_agent_summary.txt`
 
 ## Requirements
 
@@ -46,7 +46,7 @@ Given an HSLE run directory path, the agent:
 ```
 
 ### Output
-The agent writes analysis to `hsle_debug_agent_summary.txt` in the run directory.
+The agent writes analysis to `result/<run_name>_hsle_debug_agent_summary.txt`.
 The summary is **not** displayed in the chat window -- only the file path is confirmed.
 
 ## Repo Structure
@@ -113,7 +113,7 @@ Match sigs    Analyze Stages 8-13
 Phase 3: Write Summary
 Select template (cold boot / reset)
 Fill in analysis results
-Write to hsle_debug_agent_summary.txt
+Write to result/<run_name>_hsle_debug_agent_summary.txt
 ```
 
 ## Glossary

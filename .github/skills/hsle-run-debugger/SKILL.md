@@ -136,8 +136,8 @@ can be run directly from the command line:
 # Full analysis (milestone extraction + reset detection + summary generation)
 python3 .github/skills/hsle-run-debugger/scripts/main.py /path/to/hsle_run.0
 
-# With output path override (when run directory is read-only)
-python3 .github/skills/hsle-run-debugger/scripts/main.py /path/to/run --output /tmp/summary.txt
+# With output path override
+python3 .github/skills/hsle-run-debugger/scripts/main.py /path/to/run --output ./result/custom_summary.txt
 
 # Verbose mode (print milestone details to stdout)
 python3 .github/skills/hsle-run-debugger/scripts/main.py /path/to/run --verbose
@@ -165,7 +165,7 @@ python3 .github/skills/hsle-run-debugger/scripts/hsle_analyzer.py <run_dir> --su
 
 This produces:
 - Console output: result, scenario type, reset cycles, PPR count
-- File output: `<run_dir>/hsle_debug_agent_summary.txt` (or local if no write permission)
+- File output: `result/<run_name>_hsle_debug_agent_summary.txt`
 
 **Performance**: ~4-5 seconds for 400K-line logs (single-pass, keyword pre-filter).
 
@@ -734,9 +734,7 @@ milestones appear after the (N-1)th cycle's completion. For each cycle:
 **IMPORTANT**: Do NOT display the summary in the chat window. Write it to a file instead.
 
 #### Output File
-Write the summary to: `<run_dir>/hsle_debug_agent_summary.txt`
-
-If the run directory is not writable, write to the current working directory.
+Write the summary to: `result/<run_name>_hsle_debug_agent_summary.txt`
 
 #### Template Selection
 - **Normal cold boot** (no reset detected): Use template from

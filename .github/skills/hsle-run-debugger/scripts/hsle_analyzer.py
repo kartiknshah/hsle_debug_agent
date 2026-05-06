@@ -29,6 +29,8 @@ from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 
+from output_paths import default_summary_output_path, ensure_parent_dir, extract_bios_id
+
 
 # ===========================================================================
 #  COMPILED PATTERN DEFINITIONS
@@ -706,10 +708,12 @@ def _write_summary(analysis, output_path=None):
     info = analysis["summary"]
     run_dir = info["run_dir"]
     result = info["result"]
-    
+
     if output_path is None:
-        output_path = os.path.join(run_dir, "hsle_debug_agent_summary.txt")
-    
+        output_path = default_summary_output_path(run_dir)
+    else:
+        output_path = ensure_parent_dir(output_path)
+
     sep = "=" * 80
     L = []
     L.append(sep)
@@ -721,7 +725,10 @@ def _write_summary(analysis, output_path=None):
     L.append(f"  Log Lines      : {info['total_lines']:,}")
     L.append(f"  results.log    : {info['results_log'] or 'NOT FOUND'}")
     L.append(f"  PPR_TEST_DONE  : {info['ppr_total_count']} occurrence(s)")
-    
+
+    bios_version = extract_bios_id(run_dir)
+    L.append(f"  BIOS Version   : {bios_version}")
+
     if cycles:
         types = " -> ".join(f"{c.reset_type}({c.trigger_source})" for c in cycles)
         L.append(f"  Reset Cycles   : {len(cycles)}")
@@ -730,14 +737,13 @@ def _write_summary(analysis, output_path=None):
         scenario = "Back-to-back Reset" if len(cycles) > 1 else "Single Reset"
         L.append(f"  Scenario       : {scenario}")
     else:
-        L.append(f"  Scenario       : Normal Cold Boot")
-    
+        L.append("  Scenario       : Normal Cold Boot")
+
     if info.get("rca_check_found"):
         L.append(f"  rca_check      : {info['rca_check_found']}")
     L.append(f"  Overall Result : {result}")
     L.append("")
-    
-    # First boot stages
+
     L.append(sep)
     L.append("  FIRST BOOT STAGES (0-7)")
     L.append(sep)
@@ -758,8 +764,7 @@ def _write_summary(analysis, output_path=None):
             miss = f"  [MISSING: {', '.join(r.missing)}]" if r.missing else ""
             L.append(f"  Stage {s}: {status}{line_info}{miss}")
     L.append("")
-    
-    # Reset cycles
+
     if cycles:
         L.append(sep)
         L.append("  RESET CYCLE ANALYSIS")
@@ -779,14 +784,13 @@ def _write_summary(analysis, output_path=None):
             L.append(f"    Stage 11 IDI Mux          : {'line ' + str(c.idi_mux_line) if c.idi_mux_line else 'NOT REACHED'}")
             L.append(f"             BIOS ACED         : {'line ' + str(c.bios_aced_line) if c.bios_aced_line else 'NOT REACHED'}")
             L.append(f"    Stage 12 PPR_TEST_DONE    : {'line ' + str(c.ppr_test_done_line) if c.ppr_test_done_line else 'NOT REACHED'}")
-            
-            # Flow validation
+
             if c.flow_checks:
                 L.append(f"    Flow Validation ({c.reset_type}):")
                 for k, v in c.flow_checks.items():
                     flag = "OK" if v == "PASS" else v
                     L.append(f"      {k}: {flag}")
-            
+
             if c.status == "FAIL":
                 L.append("")
                 L.append(f"  *** FAILURE at Stage {c.failing_stage}{('.' + c.failing_substage) if c.failing_substage else ''} ***")
@@ -795,9 +799,8 @@ def _write_summary(analysis, output_path=None):
                 L.append("  Recommended Actions:")
                 L.append(_reset_recommendations(c))
         L.append("")
-    
-    # Cold boot failure
-    if not cycles and result == "FAIL":
+        _append_reset_template_sections(L, cycles)
+    elif result == "FAIL":
         L.append(sep)
         L.append("  FAILURE ANALYSIS")
         L.append(sep)
@@ -818,24 +821,161 @@ def _write_summary(analysis, output_path=None):
                 L.append(_cold_boot_recommendations(s))
                 break
         L.append("")
-    
+
     L.append(sep)
-    L.append("  END OF SUMMARY")
+    L.append("  END OF HSLE RUN DEBUG SUMMARY")
     L.append(sep)
-    
+
     content = "\n".join(L) + "\n"
-    
-    try:
-        with open(output_path, "w") as f:
-            f.write(content)
-        return output_path
-    except PermissionError:
-        fallback = os.path.join(
-            os.getcwd(),
-            os.path.basename(run_dir) + "_hsle_debug_agent_summary.txt")
-        with open(fallback, "w") as f:
-            f.write(content)
-        return fallback
+
+    with open(output_path, "w") as f:
+        f.write(content)
+    return output_path
+
+
+def _append_reset_template_sections(lines, cycles):
+    sep = "=" * 80
+    failing = next((cycle for cycle in cycles if cycle.status == "FAIL"), None)
+
+    lines.append(sep)
+    lines.append("  FAILURE ANALYSIS")
+    lines.append(sep)
+    lines.append("")
+    if failing is None:
+        lines.append("  No reset-cycle failure detected.")
+        lines.append("")
+    else:
+        last_marker_label, last_marker_line = _last_reached_reset_marker(failing)
+        lines.append("  Last Activity")
+        lines.append("  -------------")
+        lines.append(f"  Last console output  : {_last_console_output(failing)}")
+        lines.append("  Last debug_port PC   : N/A")
+        lines.append(f"  Emu cycle at last    : {last_marker_label} @ line {last_marker_line}")
+        lines.append("  Timeout at           : N/A")
+        lines.append("  Silence gap          : N/A")
+        lines.append("")
+        lines.append("  Failure Signature")
+        lines.append("  -----------------")
+        lines.append(f"  Signature    : {_cycle_signature(failing)}")
+        lines.append("  Evidence     :")
+        for evidence_line in _cycle_evidence_lines(failing):
+            lines.append(f"    {evidence_line}")
+        lines.append("")
+        lines.append("  Root Cause")
+        lines.append("  ----------")
+        for root_line in _cycle_root_cause(failing).splitlines():
+            lines.append(root_line)
+        lines.append("")
+        lines.append("  BIOS Issue Analysis (Stage 6/7/11 failures only)")
+        lines.append("  -------------------------------------------------")
+        if failing.failing_stage == 11:
+            lines.append("  BIOS boot reached second-boot fetch but did not complete. Run bios-issue-analyzer on the second-boot segment for EWL/IPSD/RC fatal/assert/post-code detail.")
+        else:
+            lines.append("  N/A")
+        lines.append("")
+
+    lines.append(sep)
+    lines.append("  RECOMMENDATIONS")
+    lines.append(sep)
+    lines.append("")
+    if failing is None:
+        lines.append("  - No failure-specific recommendations. All detected reset cycles passed.")
+    else:
+        for rec_line in _reset_recommendations(failing).splitlines():
+            lines.append(rec_line)
+    lines.append("")
+
+    lines.append(sep)
+    lines.append("  KEY LOG EVIDENCE")
+    lines.append(sep)
+    lines.append("")
+    if failing is None:
+        for cycle in cycles:
+            lines.append(f"  - Cycle {cycle.cycle_number} trigger: line {cycle.trigger_line} | {cycle.trigger_content[:120]}")
+    else:
+        for evidence_line in _cycle_log_evidence(failing):
+            lines.append(f"  - {evidence_line}")
+    lines.append("")
+
+
+def _last_console_output(cycle):
+    if cycle.failure_context:
+        return cycle.failure_context[-1]
+    if cycle.trigger_content:
+        return cycle.trigger_content[:150]
+    return cycle.failure_detail or "N/A"
+
+
+def _last_reached_reset_marker(cycle):
+    markers = [
+        ("AUTO_EXIT", cycle.auto_exit_line),
+        ("PPR_TEST_DONE", cycle.ppr_test_done_line),
+        ("BIOS_ACED", cycle.bios_aced_line),
+        ("IDI_MUX", cycle.idi_mux_line),
+        ("BIOS_FIRST_FETCH", cycle.bios_first_fetch_line),
+        ("RESET_PHASE_6", cycle.reset_phase_6_line),
+        ("PRIMECODE_START", cycle.primecode_start_line),
+        ("BEGIN_RESET_FLOW", cycle.begin_reset_flow_line),
+        ("RESET_TRIGGERED", cycle.reset_triggered_line),
+        ("HSLE_START_RESET", cycle.hsle_start_reset_line),
+        ("RESET_TRIGGER", cycle.trigger_line),
+    ]
+    for label, line in markers:
+        if line:
+            return label, line
+    return "N/A", 0
+
+
+def _cycle_signature(cycle):
+    stage_text = f"Stage {cycle.failing_stage}"
+    if cycle.failing_substage:
+        stage_text += f".{cycle.failing_substage}"
+    if cycle.failure_detail:
+        return f"{stage_text}: {cycle.failure_detail}"
+    return stage_text
+
+
+def _cycle_root_cause(cycle):
+    root_causes = {
+        (10, "10.0"): "  Reset hardware entry reached BEGIN_RESET_FLOW, but second-boot primecode never started. This points to a stall in early reset-phase bring-up before BIOS first fetch.",
+        (10, "10.3"): "  Primecode started but RESET_PHASE_6 never completed, which indicates the second-boot RTL reset sequence stalled before handoff to BIOS.",
+        (10, "10.4"): "  RESET_PHASE_6 completed, but BIOS first fetch never occurred. The handoff from reset flow into BIOS execution did not complete.",
+        (11, "11.0"): "  BIOS first fetch wait was reached, but IDI Mux never enabled. The VP/RTL handoff into BIOS execution appears blocked.",
+        (11, "11.2"): "  IDI Mux enabled, but BIOS never completed to ACED. This indicates a BIOS-side failure or hang during the second boot.",
+        (12, ""): "  BIOS completed on the second boot, but the workload never reached the next PPR_TEST_DONE marker. The failure is after BIOS completion in OS or workload execution.",
+    }
+    return root_causes.get((cycle.failing_stage, cycle.failing_substage), f"  {cycle.failure_detail or 'Reset cycle failed before completion.'}")
+
+
+def _cycle_evidence_lines(cycle):
+    evidence = [f"Trigger line {cycle.trigger_line}: {cycle.trigger_content[:120]}"]
+    label, line = _last_reached_reset_marker(cycle)
+    if line:
+        evidence.append(f"Last reached marker: {label} at line {line}")
+    if cycle.failure_detail:
+        evidence.append(f"Failure detail: {cycle.failure_detail}")
+    for key, value in cycle.flow_checks.items():
+        if value != "PASS":
+            evidence.append(f"Flow check {key}: {value}")
+    if cycle.failure_context:
+        evidence.extend(cycle.failure_context[-3:])
+    return evidence
+
+
+def _cycle_log_evidence(cycle):
+    evidence = [
+        f"Cycle {cycle.cycle_number} trigger: line {cycle.trigger_line} | {cycle.trigger_content[:120]}",
+        f"HSLE start reset: {'line ' + str(cycle.hsle_start_reset_line) if cycle.hsle_start_reset_line else 'NOT REACHED'}",
+        f"BEGIN_RESET_FLOW: {'line ' + str(cycle.begin_reset_flow_line) if cycle.begin_reset_flow_line else 'NOT REACHED'}",
+        f"Primecode start: {'line ' + str(cycle.primecode_start_line) if cycle.primecode_start_line else 'NOT REACHED'}",
+        f"BIOS first fetch: {'line ' + str(cycle.bios_first_fetch_line) if cycle.bios_first_fetch_line else 'NOT REACHED'}",
+        f"IDI Mux: {'line ' + str(cycle.idi_mux_line) if cycle.idi_mux_line else 'NOT REACHED'}",
+        f"BIOS ACED: {'line ' + str(cycle.bios_aced_line) if cycle.bios_aced_line else 'NOT REACHED'}",
+        f"PPR_TEST_DONE: {'line ' + str(cycle.ppr_test_done_line) if cycle.ppr_test_done_line else 'NOT REACHED'}",
+    ]
+    for key, value in cycle.flow_checks.items():
+        evidence.append(f"Flow validation {key}: {'OK' if value == 'PASS' else value}")
+    return evidence
 
 
 def _cold_boot_recommendations(stage):

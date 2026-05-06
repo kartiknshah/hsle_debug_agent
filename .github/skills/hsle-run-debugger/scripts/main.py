@@ -3,7 +3,7 @@
 HSLE Run Debugger - Main Entry Point
 
 Runs the complete debug pipeline: milestone extraction -> reset detection ->
-summary generation. Produces hsle_debug_agent_summary.txt.
+summary generation. Produces the summary file in the repo-local result directory.
 
 Usage:
     python3 main.py <run_directory>
