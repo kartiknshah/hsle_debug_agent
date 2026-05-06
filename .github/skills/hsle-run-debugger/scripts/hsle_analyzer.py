@@ -108,7 +108,7 @@ RESET_PATTERNS = {
     "begin_reset_flow":   re.compile(r"BEGIN_RESET_FLOW"),
     "reset_triggered":    re.compile(r"RST_TAG\s+Reset\s+triggered"),
     # Stage 10: Second boot RTL
-    "boot_fsm_start":     re.compile(r"BOOT_FSM\s+state\s+0x0?1\b"),
+    "boot_fsm_start":     re.compile(r"BOOT_FSM(?:\s+state\s+0x0?1\b|_(?:SWITCH_RO_TO_XTAL|START_FUSE_SENSE|DFX_AGG_FUSE_PULL)\b)"),
     "boot_fsm_end":       re.compile(r"BOOT_FSM\s+state\s+0x(?:41|3c)\b"),
     "reset_phase_3_2nd":  re.compile(r"RESET_PHASE_3"),
     "reset_phase_6_2nd":  re.compile(r"RESET_PHASE_6"),
@@ -626,12 +626,8 @@ def _evaluate_cycle(cycle):
             cycle.failure_detail = "RESET_PHASE_6 done but BIOS first fetch never reached"
     elif cycle.bios_aced_line == 0:
         cycle.status = "FAIL"; cycle.failing_stage = 11
-        if cycle.idi_mux_line == 0:
-            cycle.failing_substage = "11.0"
-            cycle.failure_detail = "BIOS first fetch wait seen but IDI Mux never enabled"
-        else:
-            cycle.failing_substage = "11.2"
-            cycle.failure_detail = "IDI Mux enabled but BIOS never completed (ACED missing)"
+        cycle.failing_substage = "11.2"
+        cycle.failure_detail = "BIOS first fetch wait seen but BIOS never completed (ACED missing)"
     else:
         cycle.status = "FAIL"; cycle.failing_stage = 12
         cycle.failure_detail = "BIOS completed but second PPR_TEST_DONE missing"
@@ -781,8 +777,7 @@ def _write_summary(analysis, output_path=None):
             L.append(f"             BEGIN_RESET_FLOW  : {'line ' + str(c.begin_reset_flow_line) if c.begin_reset_flow_line else 'NOT REACHED'}")
             L.append(f"    Stage 10 Primecode Start  : {'line ' + str(c.primecode_start_line) if c.primecode_start_line else 'NOT REACHED'}")
             L.append(f"             BIOS First Fetch  : {'line ' + str(c.bios_first_fetch_line) if c.bios_first_fetch_line else 'NOT REACHED'}")
-            L.append(f"    Stage 11 IDI Mux          : {'line ' + str(c.idi_mux_line) if c.idi_mux_line else 'NOT REACHED'}")
-            L.append(f"             BIOS ACED         : {'line ' + str(c.bios_aced_line) if c.bios_aced_line else 'NOT REACHED'}")
+            L.append(f"    Stage 11 BIOS ACED        : {'line ' + str(c.bios_aced_line) if c.bios_aced_line else 'NOT REACHED'}")
             L.append(f"    Stage 12 PPR_TEST_DONE    : {'line ' + str(c.ppr_test_done_line) if c.ppr_test_done_line else 'NOT REACHED'}")
 
             if c.flow_checks:
@@ -911,7 +906,6 @@ def _last_reached_reset_marker(cycle):
         ("AUTO_EXIT", cycle.auto_exit_line),
         ("PPR_TEST_DONE", cycle.ppr_test_done_line),
         ("BIOS_ACED", cycle.bios_aced_line),
-        ("IDI_MUX", cycle.idi_mux_line),
         ("BIOS_FIRST_FETCH", cycle.bios_first_fetch_line),
         ("RESET_PHASE_6", cycle.reset_phase_6_line),
         ("PRIMECODE_START", cycle.primecode_start_line),
@@ -940,8 +934,7 @@ def _cycle_root_cause(cycle):
         (10, "10.0"): "  Reset hardware entry reached BEGIN_RESET_FLOW, but second-boot primecode never started. This points to a stall in early reset-phase bring-up before BIOS first fetch.",
         (10, "10.3"): "  Primecode started but RESET_PHASE_6 never completed, which indicates the second-boot RTL reset sequence stalled before handoff to BIOS.",
         (10, "10.4"): "  RESET_PHASE_6 completed, but BIOS first fetch never occurred. The handoff from reset flow into BIOS execution did not complete.",
-        (11, "11.0"): "  BIOS first fetch wait was reached, but IDI Mux never enabled. The VP/RTL handoff into BIOS execution appears blocked.",
-        (11, "11.2"): "  IDI Mux enabled, but BIOS never completed to ACED. This indicates a BIOS-side failure or hang during the second boot.",
+        (11, "11.2"): "  BIOS first fetch wait was reached, but the second BIOS boot never completed to ACED. This indicates a BIOS-side failure or hang during the second boot.",
         (12, ""): "  BIOS completed on the second boot, but the workload never reached the next PPR_TEST_DONE marker. The failure is after BIOS completion in OS or workload execution.",
     }
     return root_causes.get((cycle.failing_stage, cycle.failing_substage), f"  {cycle.failure_detail or 'Reset cycle failed before completion.'}")
@@ -969,7 +962,6 @@ def _cycle_log_evidence(cycle):
         f"BEGIN_RESET_FLOW: {'line ' + str(cycle.begin_reset_flow_line) if cycle.begin_reset_flow_line else 'NOT REACHED'}",
         f"Primecode start: {'line ' + str(cycle.primecode_start_line) if cycle.primecode_start_line else 'NOT REACHED'}",
         f"BIOS first fetch: {'line ' + str(cycle.bios_first_fetch_line) if cycle.bios_first_fetch_line else 'NOT REACHED'}",
-        f"IDI Mux: {'line ' + str(cycle.idi_mux_line) if cycle.idi_mux_line else 'NOT REACHED'}",
         f"BIOS ACED: {'line ' + str(cycle.bios_aced_line) if cycle.bios_aced_line else 'NOT REACHED'}",
         f"PPR_TEST_DONE: {'line ' + str(cycle.ppr_test_done_line) if cycle.ppr_test_done_line else 'NOT REACHED'}",
     ]
