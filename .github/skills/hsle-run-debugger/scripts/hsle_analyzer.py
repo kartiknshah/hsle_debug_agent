@@ -30,7 +30,7 @@ from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
 
-from output_paths import default_summary_output_path, ensure_parent_dir, extract_bios_id
+from output_paths import default_summary_output_path, ensure_parent_dir, extract_bios_id, extract_hsle_model, extract_os_image
 
 
 # ===========================================================================
@@ -842,6 +842,104 @@ def _cold_log_evidence(stages, failing_stage):
     return "\n".join(lines)
 
 
+def _read_dut_cfg_text(run_dir):
+    plain = Path(run_dir) / "emurun.dut_cfg"
+    gz = Path(run_dir) / "emurun.dut_cfg.gz"
+    try:
+        if plain.exists():
+            return plain.read_text(errors="replace")
+        if gz.exists():
+            with gzip.open(gz, "rt", errors="replace") as fh:
+                return fh.read()
+    except Exception:
+        return ""
+    return ""
+
+
+def _cfg_value_truthy(value):
+    v = str(value).strip().strip('"').lower()
+    return v in {"1", "true", "enable", "enabled", "yes", "on"}
+
+
+def _scan_xtor_runtime_presence(log_path):
+    if not log_path:
+        return False, ""
+    pat = re.compile(r"(cxl.*xtor|pcie.*xtor|xtor.*cxl|xtor.*pcie)", re.I)
+    try:
+        with _open_log(log_path) as fh:
+            for lineno, line in enumerate(fh, 1):
+                if pat.search(line):
+                    return True, f"line {lineno}: {line.strip()[:140]}"
+    except Exception:
+        return False, ""
+    return False, ""
+
+
+def _analyze_io_xtor_consistency(run_dir, log_path):
+    cfg_text = _read_dut_cfg_text(run_dir)
+    if not cfg_text:
+        return {"has_issue": False, "evidence": "", "recommendations": ""}
+
+    cxl_requested = False
+    pcie_requested = False
+    cxl_xtor_enabled = False
+    pcie_xtor_enabled = False
+    pcie_disabled = False
+
+    for raw in cfg_text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        low = line.lower()
+
+        if "disable_pcie" in low and re.search(r"disable_pcie\s+1", low):
+            pcie_disabled = True
+        if "non_pcie" in low:
+            pcie_disabled = True
+
+        if "=" not in line:
+            continue
+        key, value = [x.strip() for x in line.split("=", 1)]
+        k = key.lower()
+        v = value.lower()
+
+        if "io_bifurcation" in k and "cxl" in v:
+            cxl_requested = True
+        if "io_bifurcation" in k and "pcie" in v:
+            pcie_requested = True
+
+        if "cxl_xtor" in k and _cfg_value_truthy(value):
+            cxl_xtor_enabled = True
+        if "pcie_xtor" in k and _cfg_value_truthy(value):
+            pcie_xtor_enabled = True
+
+    xtor_seen, xtor_line = _scan_xtor_runtime_presence(log_path)
+
+    findings = []
+    recs = []
+
+    if cxl_requested and pcie_disabled:
+        findings.append("  - Config mismatch: CXL endpoint/bifurcation requested while PCIe is disabled (DISABLE_PCIE/non_pcie).")
+        recs.append("  - Align config: if CXL device is present in io_bifurcation, do not disable PCIe fabric in run settings.")
+
+    if cxl_requested and not (cxl_xtor_enabled or pcie_xtor_enabled or xtor_seen):
+        findings.append("  - Config mismatch: CXL requested but no CXL/PCIe xtor enable detected in config or runtime logs.")
+        recs.append("  - Enable required transactors: CXL/PCIe xtor must be enabled when CXL topology is configured.")
+
+    if pcie_requested and pcie_disabled:
+        findings.append("  - Config mismatch: PCIe topology requested while PCIe is explicitly disabled.")
+        recs.append("  - Remove DISABLE_PCIE/non_pcie override or update topology to match disabled PCIe mode.")
+
+    if findings and xtor_line:
+        findings.append(f"  - Runtime xtor evidence present: {xtor_line}")
+
+    return {
+        "has_issue": bool(findings),
+        "evidence": "\n".join(findings),
+        "recommendations": "\n".join(recs),
+    }
+
+
 def _render_cold_boot_template(analysis):
     stages = analysis["stages"]
     info = analysis["summary"]
@@ -868,12 +966,18 @@ def _render_cold_boot_template(analysis):
         if failing_stage in (6, 7):
             bios_analysis = _run_bios_issue_analyzer(log_path)
 
+        cfg_check = _analyze_io_xtor_consistency(run_dir, log_path)
+        if cfg_check["has_issue"]:
+            evidence = evidence + "\n" + cfg_check["evidence"]
+            recommendations = recommendations + "\n" + cfg_check["recommendations"]
+            root_cause = root_cause + " Configuration/run-setting mismatch detected for CXL/PCIe xtor enablement."
+
     placeholders = {
         "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "run_path": run_dir,
         "test_name": Path(run_dir).name,
-        "hsle_model": "N/A",
-        "os_image": "N/A",
+        "hsle_model": extract_hsle_model(run_dir),
+        "os_image": extract_os_image(run_dir),
         "log_file": log_path or "N/A",
         "log_lines": f"{info['total_lines']:,}",
         "bios_version": extract_bios_id(run_dir),
@@ -951,13 +1055,19 @@ def _render_reset_template(analysis):
     if failing and failing.failing_stage in (6, 7, 11):
         bios_analysis = _run_bios_issue_analyzer(log_path)
 
+    cfg_check = _analyze_io_xtor_consistency(run_dir, log_path)
+    if cfg_check["has_issue"]:
+        evidence = evidence + "\n" + cfg_check["evidence"]
+        recommendations = recommendations + "\n" + cfg_check["recommendations"]
+        root_cause = root_cause + " Configuration/run-setting mismatch detected for CXL/PCIe xtor enablement."
+
     placeholders = {
         "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "reset_type": first_cycle.reset_type,
         "run_path": run_dir,
         "test_name": Path(run_dir).name,
-        "hsle_model": "N/A",
-        "os_image": "N/A",
+        "hsle_model": extract_hsle_model(run_dir),
+        "os_image": extract_os_image(run_dir),
         "log_file": log_path or "N/A",
         "log_lines": f"{info['total_lines']:,}",
         "bios_version": extract_bios_id(run_dir),
