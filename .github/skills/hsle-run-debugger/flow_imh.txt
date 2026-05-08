@@ -1,0 +1,444 @@
+================================================================================
+                    DMR IMH HSLE EXECUTION FLOW
+                    ============================
+  Model: ZSE4_DMR_IMH_FULL_FULLSTACK_HSLE (ZeBu ZSE4 emulation)
+  Configs:
+    - 1imh_1s_4cbb : 1 IMH die, 1 Socket, 4 CBB dies (most common)
+    - 2imh_1s_4cbb : 2 IMH dies (imh8 + imh9), 1 Socket, 4 CBB dies
+    - 1imh_1s_1cbb : 1 IMH die, 1 Socket, 1 CBB die
+  Reference Run: metro_basic_pushpop.0 (26ww07_1, 1imh_1s_4cbb)
+  Input Dir: 26ww6.5_IMH2_4CBB/input_dir
+================================================================================
+
+  CRITICAL TERMINOLOGY DISAMBIGUATION:
+  -------------------------------------
+  "IMH2" (capital, in paths/scripts) = IMH silicon variant Gen2 (revision name)
+    Examples: IMH2_M4C_SideModel, 26ww6.5_IMH2_4CBB, imh2_svos_post.simics,
+             IMH2_PPR_auto_exit_svos_sc.simics, [Imh2.0] in BIOS tags
+    This does NOT indicate die count. A run with "IMH2" in the path can be
+    (and usually is) a 1imh_1s_4cbb single-die model.
+
+  "2imh" (lowercase, in model_name) = 2 IMH dies in the topology
+    Only the model_name field determines die count:
+      1imh_1s_4cbb → 1 IMH die (single die, no symmetry check needed)
+      2imh_1s_4cbb → 2 IMH dies (imh8+imh9, symmetry check required)
+
+  NEVER infer die count from path names, script names, or folder names.
+  ALWAYS check model_name from determine_model.py output or emurun.dut_cfg.
+
+  KEY DIFFERENCES FROM MCP (flow.txt):
+  ------------------------------------
+  1. Model name: "1imh_1s_4cbb" or "2imh_1s_4cbb" (not "mcp_1s_ici")
+  2. ZeBu generation: ZSE4 (not ZSE5)
+  3. Hybrid switch: "Enabling simics cores" after "Reached end of phase 5"
+     (NO "IDI Mux enabled" message, NO UCLK ungating, NO IDI flush)
+  4. BOOT_FSM stream: ABSENT (no "Inform COLD | 0 - N - Starting phaseN")
+  5. Phase 4 end marker: "RESET_SEQ_MARK_PHASE4_COMPLETE...Reached end of phase 4"
+  6. Phase 5 end marker: "RESET_SEQ_PREPARE_FOR_LOOP...Reached end of phase 5"
+  7. HWRS stream: "imh 0" only for 1imh model (no imh0/imh1 symmetry check)
+  8. Primecode states: "socket 0" only for 1imh (no die8/die9 symmetry)
+  9. Fuse loading: "fuse_load.py" for 1imh, "fuse_load_2imh.py" for 2imh
+  10. Post-setup scripts: "imh2_svos_post.simics", "IMH2_PPR_auto_exit_svos_sc.simics"
+
+
+===============================================================================
+STAGE 0: SPARK BOOTSTRAP
+===============================================================================
+Source: SPARK framework
+
+  [bootstrap]
+   |
+   |-- Initializes Simics environment
+   |-- Reads runtime args from input_dir/args.yml, options.yml
+   |-- Sets bootstrap_timeout (e.g., 13_500_000_000 cycles)
+   |
+   +-- HANDOFF → input_dir/sle.simics
+
+  KEY GREP:
+    spark_session.log / SPARK Version
+    bootstrap_timeout
+
+
+===============================================================================
+STAGE 1: SLE.SIMICS — MAIN SCRIPT INITIALIZATION
+===============================================================================
+Source: input_dir/sle.simics (883 lines)
+
+  [sle.simics] "Project Simics script loading"
+   |
+   |-- 1.1 GLOBAL VARIABLE INITIALIZATION
+   |     Sets $input_dir, $model_root, $workarea from env
+   |
+   |-- 1.2 MODEL DETECTION (KEY BRANCHING POINT)
+   |     → input_dir/python/determine_model.py
+   |     Reads emurun.dut_cfg → model_name
+   |     VALID MODELS: 1imh_1s_1cbb, 1imh_1s_4cbb, 2imh_1s_4cbb,
+   |                   1imh_2s_4cbb, 1imh_2s_rtl_2l
+   |     Sets: simenv.model_name, simenv.num_imhs, simenv.imh_inst
+   |       1imh: num_imhs=1, imh_inst=[""]
+   |       2imh: num_imhs=2, imh_inst=["imh8.","imh9."]
+   |
+   |-- 1.3 EMULATION ENGINE CONFIGURATION
+   |     emu.engine setup (zse_engine for ZSE4)
+   |     Loads JEM tracker libs (libtlmgen_imh_dumponly_zse.so)
+   |
+   |-- 1.4 CONFIGDB LOADING
+   |     → test/emurun.dut_cfg
+   |
+   |-- 1.5 RTI CYCLE TRACKING
+   |     "RTI: Pre Cycle 0" / "RTI: Hit cycle_0" / "RTI: Hit cycle_100k"
+   |
+   |-- 1.6 ZSE ENGINE SETUP + MOUNT
+   |     "RTI: Pre Mount"
+   |     emu.engine->connect = TRUE
+   |     "RTI: Mounted"
+   |
+   |-- 1.7 GPIO XTOR SETUP
+   |     → gpio_xtor.simics (waits for "RESET_PHASE_3_INFRA is complete")
+   |     For 2imh: also loads imh9 gpio_xtor
+   |
+   |-- 1.8 FUSE LOADING
+   |     if model_name == "2imh_1s_4cbb":
+   |       → fuse_load_2imh.py (loads for imh8 + imh9)
+   |     else:
+   |       → fuse_load.py (loads for single "imh" die)
+   |     Message: "[fuse_load.py] [INFO] STARTING..."
+   |              "[fuse_load.py] [INFO] Model: 1imh_1s_4cbb"
+   |              "[fuse_load.py] [INFO] DMR IMH Model Detected"
+   |
+   |-- 1.9 PRIMECODE LOADING
+   |     → primecode.py (loads IMH primecode images)
+   |
+   |-- 1.10 S3M LOADING
+   |     → mem_load.load_s3m()
+   |
+   |-- 1.11 OCODE LOADING (IMH-specific)
+   |     For 2imh:
+   |       → mem_load.load_ocode_frontdoor("imh8")
+   |       → mem_load.load_ocode_frontdoor("imh9")
+   |       → mem_load.load_msm_aggr_frontdoor("imh8")
+   |       → mem_load.load_msm_aggr_frontdoor("imh9")
+   |     For 1imh:
+   |       → mem_load.load_ocode_frontdoor("imh")
+   |       → mem_load.load_msm_aggr_frontdoor("imh")
+   |
+   |-- 1.12 RESET PHASE MARKERS SETUP
+   |     if model_name == "2imh_1s_4cbb":
+   |       → reset_phase_marker_2imh.simics (creates script-pipes for die8+die9)
+   |     else:
+   |       → reset_phase_marker.simics (single die version)
+   |
+   |-- 1.13 IMH FORCES AND MONITORS
+   |     → dmr_imh_forces.simics
+   |     → dmr_2imh_only_forces.simics (2imh only)
+   |     → primecode_monitors.simics
+   |     → mca_monitor.simics, rca_signal_monitor.simics
+   |
+   |-- 1.14 TRANSACTORS
+   |     → d2d_iosf_pmsb_xtor.simics
+   |     → spi_xtor.simics, espi_xtor.simics, dfi_xtor.simics
+   |     → pega_xtor.simics, svid_vr_en.simics
+   |     → pm_hlm.simics
+   |     For 2imh: → imh9 pmsb xtor
+   |
+   |-- 1.15 UCIE FULLSTACK (SLE path, when hsle=FALSE)
+   |     → uxi_fullstack_ucie.simics + cbb1/cbb2/cbb3
+   |
+   |-- 1.16 HSLE ENTRY (when hsle=TRUE)
+   |     HANDOFF → input_dir/simics_scripts/hsle/hsle.simics
+   |
+   +-- 1.17 SIM_continue → EMULATION STARTS RUNNING
+
+  KEY GREP:
+    "[sle.simics] Project Simics script loading"
+    "determine_model.py"
+    "model from emurun.dut_cfg file: 1imh_1s_4cbb"
+    "RTI: Pre Cycle 0" / "RTI: Mounted"
+    "[fuse_load.py] [INFO] STARTING"
+    "primecode" / "mem_load"
+
+
+===============================================================================
+STAGE 2: VP.SIMICS — VIRTUAL PLATFORM SETUP
+===============================================================================
+Source: input_dir/simics_scripts/hsle/vp.simics
+Called from: hsle.simics (first line)
+
+  [vp.simics] "HYBRID: Running setup script"
+   |
+   |-- 2.1 VP CONFIGURATION
+   |     soc_config = "ucc", soc_revision = "b0"
+   |     num_cpus = 1, core_type = "pnc"
+   |     gpu = "None", artifactory = False
+   |
+   |-- 2.2 BIOS CONFIGURATION
+   |     bios / bios2 from cmd_line_opt->hybrid_bios
+   |     Folder handling for dual SPI (ifwi1.bin / ifwi2.bin)
+   |
+   |-- 2.3 FMOD ENABLING
+   |     if cbbpunit_fmod: → fmod/cbbpunit.simics
+   |     if imhpunit_fmod: → fmod/imhpunit.simics
+   |     if cbbese_fmod: → fmod/ese.simics
+   |
+   |-- 2.4 DDR CONFIGURATION
+   |     16 DIMMs (8 per MC), DDR5 type
+   |     SPD: DMR 0p5 collaterals
+   |
+   |-- 2.5 SIMICS TARGET LOADING
+   |     $yml_script = "oakstream-rio/1_socket_ucc-generic"
+   |     → global_cmds.load_target(...)
+   |     Instantiates OakStream RIO platform model
+   |
+   |-- 2.6 UART CAPTURE
+   |     oakstream_rio.serconsole.con.capture-start test/uart.log
+   |
+   +-- RETURNS to hsle.simics
+
+  KEY GREP:
+    "[vp.simics] HYBRID: Running setup script"
+    "oakstream-rio"
+    "serconsole.con.capture-start"
+
+
+===============================================================================
+STAGE 3: HSLE.SIMICS — HYBRID SYSTEM LEVEL EMULATION SETUP (IMH version)
+===============================================================================
+Source: input_dir/simics_scripts/hsle/hsle.simics
+Called from: sle.simics step 1.16
+
+  [hsle.simics]
+   |
+   |-- 3.1 VP SETUP
+   |     → vp.simics (VP platform load)
+   |     → PPR_WorkAround.simics
+   |
+   |-- 3.2 UCIE/UFI CONNECTIONS (HSLE path)
+   |     if fullstack_en:
+   |       → hsle/fullstack/ucie_xtor_grouping.simics (ZSE only)
+   |       → hsle/fullstack/uxi_fullstack_ucie.simics
+   |       → hsle/fullstack/uxi_fullstack_ucie_cbb1/cbb2/cbb3.simics
+   |       → hsle/fullstack/uxi_fullstack_bfm_reset.simics
+   |       → hsle/fullstack/ucie_ignite_connection_4cbb.simics
+   |     else (litestack):
+   |       → hsle/litestack/dmr_hub_6P_imh_bios_seq.simics
+   |       → hsle/litestack/ufi_ignite_connection_4cbb.simics
+   |
+   |-- 3.3 SB2UCIE XTOR
+   |     → d2d_iosf_gpsb_pmsb_xtor.simics
+   |     → hsle/iosf_sb_debug.simics
+   |
+   |-- 3.4 HYBRID CORE SWITCH MONITOR (KEY DIFFERENCE FROM MCP)
+   |     *** IMH HYBRID SWITCH FLOW ***
+   |     script-branch "Hybrid cores enabling":
+   |       wait_for_log("Reached end of phase 5", "emu.devices")
+   |       wait_for_cycle(relative, 10000)
+   |       penable -all
+   |       "[hsle.simics] Enabling simics cores"
+   |
+   |     *** NO IDI Mux, NO UCLK ungating, NO 5M-cycle IDI flush ***
+   |     *** Triggered by PUNIT "RESET_SEQ_PREPARE_FOR_LOOP" event ***
+   |
+   |-- 3.5 UFI LATE CANCEL (litestack only)
+   |     wait_for_log("Initiate PLL Reset Pull for socket", "emu.devices")
+   |     → ignite_ufi_late_cancel.simics
+   |
+   |-- 3.6 PUNIT WATCHDOG DISABLE (ZSE + imhpunit_fmod)
+   |     wait_for_log("0x0005", "oakstream_rio.debug_port.bank.backport")
+   |     Disables watchdog on imh_die0 and imh_die1
+   |
+   |-- 3.7 TEST CHECKER (optional)
+   |     if check_postcode5: wait for "0x0005" → exit
+   |     if check_link_train: wait for "Link Trained" → exit
+   |
+   |-- 3.8 BLAZE BARRIER (checkpoint support)
+   |
+   |-- 3.9 PCIE/CXL LINK TRAIN (if enabled)
+   |     → hsle/link_train_bp.simics
+   |
+   +-- RETURNS
+
+  KEY GREP:
+    "[hsle.simics] Enabling simics cores"  ← HYBRID SWITCH MARKER (IMH)
+    "Reached end of phase 5"
+    "[vp.simics] HYBRID: Running setup script"
+    "ucie_ignite_connection_4cbb"
+
+
+===============================================================================
+STAGE 4: CBB SETUP (no separate parallel branch in IMH)
+===============================================================================
+  In IMH HSLE, CBB reset coordination is handled within the main sle.simics
+  flow (via reset_phase_marker scripts and UCIe fullstack scripts), NOT as a
+  separate "script-branch cbb_reset" as in MCP.
+
+  KEY: No separate CBB sle.simics parallel branch.
+
+
+===============================================================================
+STAGE 5: RTL RESET PHASES (IMH version)
+===============================================================================
+Tracked by: reset_phase_marker.simics (1imh) or reset_phase_marker_2imh.simics (2imh)
+Forces by:  dmr_imh_forces.simics
+
+  [Emulation Running on ZeBu Hardware]
+   |
+   |-- 5.1 RESET PHASE 1
+   |     "[reset_phase_marker.simics] Start of RESET_PHASE_1 for socket 0"
+   |     S3M/IBL boot, PUnit primecode begins
+   |     "[reset_phase_marker.simics] End of RESET_PHASE_1 for socket 0"
+   |
+   |-- 5.2 RESET PHASE 3 — INFRA
+   |     "[reset_phase_marker.simics] Waiting for End of RESET_PHASE_3_INFRA marker"
+   |     "imh 0 sequencer_log: HWRS - RESET_PHASE_3_INFRA is complete for socket 0 !!"
+   |     "[reset_phase_marker.simics] End of RESET_PHASE_3_INFRA and start of RESET_PHASE_3_D2D"
+   |
+   |-- 5.3 RESET PHASE 3 — D2D
+   |     "imh 0 sequencer_log: HWRS - RESET_PHASE_3_D2D is complete for socket 0 !!"
+   |     "[reset_phase_marker.simics] End of RESET_PHASE_3_D2D and start of RESET_PHASE_3_INFRA_CFG"
+   |
+   |-- 5.4 RESET PHASE 3 — INFRA_CFG
+   |     "HWRS - RESET_PHASE_3_INFRA_CFG is complete for socket 0 !! Reached end of phase 3 !!"
+   |     "[reset_phase_marker.simics] End of RESET_PHASE_3_INFRA_CFG and start of RESET_PHASE_4"
+   |
+   |-- 5.5 RESET PHASE 4 (IMH-SPECIFIC MARKER)
+   |     "PUNIT - RESET_SEQ_MARK_PHASE4_COMPLETE is complete for socket 0 !! Reached end of phase 4 !!"
+   |     "[reset_phase_marker.simics] End of RESET_PHASE_4 and start of RESET_PHASE_5"
+   |
+   |-- 5.6 RESET PHASE 5 (IMH-SPECIFIC MARKER)
+   |     "PUNIT - RESET_SEQ_PREPARE_FOR_LOOP is complete for socket 0 !! Reached end of phase 5 !!"
+   |     "[reset_phase_marker.simics] End of RESET_PHASE_5 for socket 0"
+   |
+   |-- 5.7 HYBRID SWITCH (triggered by "Reached end of phase 5")
+   |     "[hsle.simics] Enabling simics cores"
+   |     VP cores (Simics x86 ISS) now handle instruction execution
+   |
+   +-- After hybrid switch: BIOS boot begins (Stage 6)
+
+  KEY DIFFERENCES FROM MCP:
+    - NO "Start of RESET_PHASE_6" marker (hybrid switch triggered by phase 5 end)
+    - NO "IDI Mux enabled" message
+    - Phase 4: "RESET_SEQ_MARK_PHASE4_COMPLETE" (not "End of RESET_PHASE_4")
+    - Phase 5: "RESET_SEQ_PREPARE_FOR_LOOP" (not "End of RESET_PHASE_5")
+    - NO BOOT_FSM stream ("Inform COLD | 0 - N" is absent)
+    - HWRS: only "imh 0" (single instance for 1imh model)
+    - Primecode: states reported for "socket 0" only (no die8/die9)
+
+  LOG STREAMS (IMH - two parallel streams, NOT three):
+    STREAM 1 — HWRS events (single IMH die for 1imh):
+      "imh 0 sequencer_log: HWRS - <event> for socket 0 !!"
+      For 2imh: "imh 0" AND "imh 1" must both report each event
+    STREAM 2 — IMH Primecode states:
+      "N cycles - imh primecode state <STATE> completed for socket 0 (0xHEX)"
+      For 2imh: states must complete for both dies
+
+  KEY GREP:
+    grep "RESET_PHASE" testbench.log
+    grep "sequencer_log: HWRS" testbench.log
+    grep "imh primecode state" testbench.log
+    grep "Reached end of phase 5\|Enabling simics cores" testbench.log
+
+
+===============================================================================
+STAGE 6: BIOS BOOT (IDENTICAL TO MCP — same serconsole markers)
+===============================================================================
+Driven by: Simics VP x86 ISS executing BIOS from IFWI flash image
+Console: <oakstream_rio.serconsole.con>
+debug_port: [oakstream_rio.debug_port.bank.backport info]
+
+  Sub-stages 6.0–6.6 are IDENTICAL to MCP flow.txt.
+  Same milestones:
+    - debug_port 0x0001 (first VP fetch)
+    - EarlyPlatformPchInit
+    - BIOS ID: OKSDCRB1.*
+    - START_MRC_RUN
+    - JEDEC_DATA (expect 16 for 16-DIMM config)
+    - PeiInstallPeiMemory
+    - DXE IPL Entry
+    - NvmExpressDriverBindingStart
+    - OnReadyToBoot, [Bds]Booting
+    - ExitBootServices
+    - Decompressing Linux, Linux version
+
+  MRC bypass confirmed: "[IpMc[Dmr.0][Imh2.0][3]] IpMcMemInitComplete (): Warning: Memory Initalization bypassed"
+  (Note IMH-specific tag: "[Imh2.0]" instead of MCP tag)
+
+  See bios_flow.txt for full sub-stage detail (applies to both MCP and IMH).
+
+
+===============================================================================
+STAGE 7: OS BOOT (IDENTICAL TO MCP — same SVOS/CentOS markers)
+===============================================================================
+Driven by: VP cores executing Linux kernel from NVMe disk image
+
+  Same milestones as MCP:
+    - "Linux version 6.18.0.svos-next-tickless-x86-64"
+    - "root@sut:/"
+    - "[PPR] Got root@sut:"
+    - "PPR_TEST_DONE" (in emu.devices log)
+    - "Auto exit script: exiting from auto exit script"
+
+  IMH-specific post-setup scripts (different names, same function):
+    - imh2_svos_post.simics (replaces svos_post.simics)
+    - IMH2_PPR_auto_exit_svos_sc.simics (replaces PPR_auto_exit_svos.simics)
+
+
+===============================================================================
+STAGE 8: TEST TERMINATION
+===============================================================================
+  Same two pass paths as MCP:
+    Path A: ACED (bare-metal tests)
+    Path B: PPR_TEST_DONE + Auto exit (SVOS/CentOS PPR runs)
+
+  IMPORTANT (IMH-specific): results.log may contain "HANG" even when
+  PPR_TEST_DONE + Auto exit are both present. This is because the
+  bootstrap_timeout fires AFTER auto-exit in some IMH runs (timing race).
+  Always check PPR_TEST_DONE FIRST — if present with Auto exit, run is PASS.
+
+
+===============================================================================
+MODEL DETECTION (from testbench.log)
+===============================================================================
+
+  PRIMARY: grep for determine_model.py output:
+    "[determine_model.py] Read the model from emurun.dut_cfg file: 1imh_1s_4cbb"
+    "[determine_model.py] Read the model_build_cfg from emurun.dut_cfg file: ZSE4_DMR_IMH_FULL_FULLSTACK_HSLE"
+
+  SECONDARY: emurun.dut_cfg fields:
+    emu::build_info::model_name = 1imh_1s_4cbb
+    emu::build_info::model_build_cfg = ZSE4_DMR_IMH_FULL_FULLSTACK_HSLE
+    emu::model::num_dies_per_socket = 1
+
+  CLASSIFICATION RULES:
+    model_name contains "imh" → IMH model
+    model_name contains "mcp" → MCP model
+    model_build_cfg contains "IMH" → IMH
+    model_build_cfg contains "MCP" → MCP
+
+  IMH VARIANTS:
+    1imh_1s_4cbb  → 1 IMH die, 1 socket, 4 CBBs (most common)
+    2imh_1s_4cbb  → 2 IMH dies, 1 socket, 4 CBBs (like MCP topology)
+    1imh_1s_1cbb  → 1 IMH die, 1 socket, 1 CBB (reduced config)
+    1imh_2s_4cbb  → 1 IMH die, 2 sockets, 4 CBBs
+    1imh_2s_rtl_2l → 1 IMH die, 2 sockets, RTL 2-link
+
+
+===============================================================================
+FILE DEPENDENCY SUMMARY
+===============================================================================
+
+LEVEL 0: SPARK bootstrap
+LEVEL 1: input_dir/sle.simics
+LEVEL 2 (called by sle.simics):
+  ├── input_dir/python/determine_model.py
+  ├── input_dir/python/fuse_load.py (1imh) / fuse_load_2imh.py (2imh)
+  ├── input_dir/python/primecode.py
+  ├── input_dir/python/mem_load.py (S3M + ocode + MSM aggr)
+  ├── input_dir/simics_scripts/reset_phase_marker.simics (1imh)
+  ├── input_dir/simics_scripts/reset_phase_marker_2imh.simics (2imh)
+  ├── input_dir/simics_scripts/dmr_imh_forces.simics
+  ├── input_dir/simics_scripts/primecode_monitors.simics
+  ├── input_dir/simics_scripts/hsle/hsle.simics ← KEY ENTRY
+  │     ├── input_dir/simics_scripts/hsle/vp.simics
+  │     ├── input_dir/simics_scripts/hsle/fullstack/uxi_fullstack_ucie*.simics
+  │     └── input_dir/simics_scripts/hsle/fullstack/ucie_ignite_connection_4cbb.simics
+  └── test/imh2_svos_post.simics, test/IMH2_PPR_auto_exit_svos_sc.simics

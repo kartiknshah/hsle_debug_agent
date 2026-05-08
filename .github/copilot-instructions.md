@@ -1,7 +1,7 @@
 # hsle-debug-agent — Workspace Instructions
 
 This repo provides the **hsle_debug** GitHub Copilot custom agent for debugging
-DMR MCP ICI HSLE (ZeBu ZSE5) emulation runs.
+DMR MCP/IMH HSLE (ZeBu ZSE5/ZSE4) emulation runs.
 
 ## Repo Layout
 
@@ -12,9 +12,11 @@ DMR MCP ICI HSLE (ZeBu ZSE5) emulation runs.
   skills/
     hsle-run-debugger/
       SKILL.md                         # 6-step debug procedure (loaded by agent)
-      flow.txt                         # Golden execution flow reference (STAGE 0-8)
+      flow.txt                         # Golden execution flow reference — MCP (STAGE 0-8)
+      flow_imh.txt                     # Golden execution flow reference — IMH (STAGE 0-8)
       bios_flow.txt                    # BIOS boot sub-phase flow reference (Stage 6.0-6.6)
-      reset_phase_flow.txt             # RTL reset sub-event reference (Stage 5, 3 streams)
+      reset_phase_flow.txt             # RTL reset sub-event reference — MCP (Stage 5, 3 streams)
+      reset_phase_flow_imh.txt         # RTL reset sub-event reference — IMH (Stage 5, 2 streams)
       cold_reset_flow.txt              # Cold reset flow reference (Stages 8-13)
       warm_reset_flow.txt              # Warm reset flow reference (Stages 8-13, warm-specific)
       global_reset_flow.txt            # Global reset flow reference (Stages 8-13, global-specific)
@@ -40,13 +42,13 @@ DMR MCP ICI HSLE (ZeBu ZSE5) emulation runs.
 
 | Agent | Trigger | Purpose |
 |-------|---------|---------|
-| `hsle_debug` | `@hsle_debug` | Debug HSLE run failures — analyzes `testbench.log`, identifies failing stage, matches known signatures, writes structured debug summary into the repo-local `result/` directory. Supports normal cold boot and reset scenarios (cold/warm/global, including back-to-back resets). |
+| `hsle_debug` | `@hsle_debug` | Debug HSLE run failures — analyzes `testbench.log`, identifies failing stage, matches known signatures, writes structured debug summary into the repo-local `result/` directory. Supports MCP (ZSE5) and IMH (ZSE4) models, normal cold boot, and reset scenarios (cold/warm/global, including back-to-back resets). |
 
 ## Skills
 
 | Skill | Trigger | Purpose |
 |-------|---------|---------|
-| `hsle-run-debugger` | Stage-by-stage HSLE run analysis | 9-stage golden flow comparison, reset detection, milestone grep, failure signature matching |
+| `hsle-run-debugger` | Stage-by-stage HSLE run analysis | 9-stage golden flow comparison (MCP: flow.txt, IMH: flow_imh.txt), reset detection, milestone grep, failure signature matching |
 | `bios-issue-analyzer` | Stage 6/7 BIOS failure, or standalone BIOS log analysis | Decodes EWL/IPSD/RC Fatal/ASSERT/POST codes from serconsole output or raw BIOS logs |
 
 ## How It Works
@@ -89,6 +91,22 @@ written under the repo-local `result/` directory, preferably `result/tmp/`.
 Do not create temporary Python scripts, logs, or intermediate files under `/tmp`
 or outside the repository.
 
+## Shell Environment — tcsh Constraints
+
+The default shell in this workspace is **tcsh** (C shell). This affects how files
+are written from the terminal:
+
+- **No heredocs**: `<< 'EOF'` syntax does not exist in tcsh. Never use it.
+- **Quoting hazards**: `!` triggers history expansion inside `"..."`;  `$` expands
+  variables; `\n` is literal, not a newline.
+- **No multi-line strings**: `bash -c`, multi-line `echo`, and inline `python3 -c`
+  with complex content will fail or corrupt output.
+
+**File writing priority order:**
+1. **Use the `create_file` tool** (VS Code file system API) — always works.
+2. Write a `.py` script via `create_file`, then run `python3 script.py`.
+3. Last resort: single-line `python3 -c` with simple ASCII only.
+
 ## Glossary
 
 | Term | Meaning |
@@ -97,9 +115,10 @@ or outside the repository.
 | MCP | Multi-Chip Package |
 | ICI | Inter-Chip Interconnect |
 | HSLE | Hybrid System Level Emulation — Simics VP cores + ZeBu RTL uncore |
-| ZeBu ZSE5 | Synopsys ZeBu Server 5 emulation hardware |
+| ZeBu ZSE5 | Synopsys ZeBu Server 5 emulation hardware (used for MCP) |\n| ZeBu ZSE4 | Synopsys ZeBu Server 4 emulation hardware (used for IMH) |
 | SPARK | Test framework that bootstraps HSLE runs |
-| IMH | I/O and Memory Hub die (2 per socket: imh8, imh9) |
+| IMH | I/O and Memory Hub die (2 per socket: imh8, imh9 in MCP; imh0 in 1imh; imh0+imh1 in 2imh) |
+| IMH2 | IMH silicon variant Gen2 (revision name) — does NOT describe die topology. Do not infer die count from this term |
 | CBB | Compute Building Block die (4 per socket) |
 | UCIe | Universal Chiplet Interconnect Express — D2D link between IMH<->CBB |
 | fmod | Functional Model Override — replaces RTL firmware with Simics model for faster boot |

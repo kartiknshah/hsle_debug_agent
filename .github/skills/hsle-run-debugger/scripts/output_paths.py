@@ -90,19 +90,20 @@ def extract_hsle_model(run_dir: str) -> str:
     log_gz_path = Path(run_dir) / "testbench.log.gz"
     
     model_pattern = re.compile(r"The model we are running on is\s+([a-z_0-9]+)")
+    model_pattern_imh = re.compile(r"Read the model from emurun\.dut_cfg file:\s+([a-z_0-9]+)")
     
     try:
         # Try testbench.log first
         if log_gz_path.exists():
             with gzip.open(log_gz_path, "rt", errors="ignore") as f:
                 for line in f:
-                    match = model_pattern.search(line)
+                    match = model_pattern.search(line) or model_pattern_imh.search(line)
                     if match:
                         return match.group(1)
         elif log_path.exists():
             with open(log_path, "r", errors="ignore") as f:
                 for line in f:
-                    match = model_pattern.search(line)
+                    match = model_pattern.search(line) or model_pattern_imh.search(line)
                     if match:
                         return match.group(1)
         

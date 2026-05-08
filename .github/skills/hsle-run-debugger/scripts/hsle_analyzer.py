@@ -39,32 +39,39 @@ from output_paths import default_summary_output_path, ensure_parent_dir, extract
 #  cold_reset_flow.txt, warm_reset_flow.txt, global_reset_flow.txt
 # ===========================================================================
 
-# --- Stage 0-7: First boot milestones (from flow.txt) ---
+# --- Stage 0-7: First boot milestones (from flow.txt / flow_imh.txt) ---
+# IMPORTANT: Patterns must be precise enough to avoid false matches.
+# - Stage 0-1: Well-defined SPARK/sle.simics markers (reliable)
+# - Stage 2-4: Setup/mount/compile phases -- markers vary by build; use
+#   non-required patterns and rely on Stage 5 (hybrid_switch) as the gate
+# - Stage 5: Hybrid switch = definitive RTL-to-VP handoff (critical)
+# - Stage 6-7: BIOS/OS boot markers from serconsole stream (reliable)
 STAGE_PATTERNS = {
     0: [
         ("spark_session", re.compile(r"spark_session\.log|SPARK.*[Ss]ession|SPARK Version:", re.I), True),
-        ("zebu_config", re.compile(r"ZSE5_DMR_MCP|ZeBu.*[Cc]onfig|zRci.*init|designName", re.I), True),
+        ("zebu_config", re.compile(r"ZSE[45]_DMR_(?:MCP|IMH)|ZeBu.*[Cc]onfig|zRci.*init|designName", re.I), True),
     ],
     1: [
-        ("emu_log_init", re.compile(r"\[emu\.devices[\ \]]|emu_log.*open|emulation.*init|determine_model\.py", re.I), True),
-        ("zse5_device", re.compile(r"ZSE5.*device|zRci.*device|zRci_init|model_build_cfg|mcp_1s_ici", re.I), True),
+        ("sle_simics_setup", re.compile(r"Running sle\.simics setup_script"), True),
+        ("model_detect", re.compile(r"determine_model\.py|model we are running on is|Read the model from emurun\.dut_cfg"), True),
     ],
     2: [
-        ("model_init", re.compile(r"model.*loaded|IDI.*link|socket.*config|hsle.*model", re.I), True),
-        ("idi_connect", re.compile(r"IDI.*connect|idi_mux|VP.*RTL", re.I), False),
+        ("rti_pre_cycle", re.compile(r"RTI:\s*Pre Cycle 0"), False),
+        ("rti_pre_mount", re.compile(r"RTI:\s*Pre Mount"), False),
+        ("rti_mounted", re.compile(r"RTI:\s*Mounted"), False),
     ],
     3: [
-        ("zebu_compile", re.compile(r"Compilation.*complete|ZeBu.*compil|partition.*compil|ZSYN.*done|Hardware ready", re.I), True),
+        ("zebu_memory_load", re.compile(r"-- ZeBu : (?:zServer|simics-common) :"), False),
     ],
     4: [
-        ("simics_run", re.compile(r"simics.*run|simulation.*start|Running.*sim|continue-alone", re.I), True),
-        ("vp_create", re.compile(r"processor.*creat|VP.*creat|x86.*creat|cpu.*object", re.I), False),
+        ("fuse_load_start", re.compile(r"\[fuse_load\.py\].*(?:STARTING|Model:)"), False),
+        ("post_setup_script", re.compile(r"Running post setup_script:"), False),
     ],
     5: [
-        ("reset_phase_1", re.compile(r"RESET_PHASE_1\b"), False),  # optional: absent in fmod runs
-        ("reset_phase_3", re.compile(r"RESET_PHASE_3\b"), False),  # optional: absent in fmod runs
-        ("reset_phase_6", re.compile(r"RESET_PHASE_6\b"), False),  # optional: absent in fmod runs
-        ("idi_mux_enable", re.compile(r"IDI.*[Mm]ux.*enabl"), True),
+        ("reset_phase_1", re.compile(r"RESET_PHASE_1\b"), False),
+        ("reset_phase_3", re.compile(r"RESET_PHASE_3\b"), False),
+        ("reset_phase_end", re.compile(r"RESET_PHASE_6\b|RESET_SEQ_PREPARE_FOR_LOOP"), False),
+        ("hybrid_switch", re.compile(r"IDI.*[Mm]ux.*enabl|Enabling simics cores"), True),
     ],
     6: [
         ("bios_start", re.compile(r"BIOS.*[Ss]tart|SEC phase|debug_port.*0x000[1-9]"), False),
@@ -117,7 +124,7 @@ RESET_PATTERNS = {
     "icecode_reload":     re.compile(r"icecode_load|IceCode.*reload", re.I),
     "hwrs_complete":      re.compile(r"HWRS_RESET_COMPLETE|HWRS.*reset.*complete", re.I),
     # Stage 11: Second BIOS
-    "idi_mux_2nd":        re.compile(r"IDI.*[Mm]ux.*enabl"),
+    "idi_mux_2nd":        re.compile(r"IDI.*[Mm]ux.*enabl|Enabling simics cores"),
     "bios_aced_2nd":      re.compile(r"BIOS_TAIL_ACED"),
     "reset_phase_7":      re.compile(r"RESET_PHASE_7"),
     # Stage 13: Termination
@@ -133,19 +140,33 @@ NOISE_RE = re.compile(r"wait-for-|Watching for|Expected.*pattern|hap_callback")
 # Skips ~95% of log lines, cutting runtime by 5-10x.
 # FAST pre-filter: tuple of keywords for O(n) string 'in' check (10-50x faster than regex)
 _PREFILTER_KEYWORDS = (
-    'RST_TAG', 'PPR_TEST_DONE', 'RESET_PHASE', 'BOOT_FSM', 'BIOS_TAIL',
+    # Reset / boot flow
+    'RST_TAG', 'PPR_TEST_DONE', 'RESET_PHASE', 'RESET_SEQ_', 'BOOT_FSM', 'BIOS_TAIL',
     'BEGIN_RESET', 'CF9', 'PWRGOOD', 'PWR_OK', 'SLP_S', 'PLTRST',
     'GBL_RST', 'GLOBAL_RESET_N', 'icecode', 'IceCode', 'fuse_reload',
     'FUSE_RELOAD', 'Fake GO', 'fake_go', 'rca_check', 'Auto exit',
-    'RESET_TEST', 'PPR check', 'ExitBootServices', 'DXE IPL',
-    'Loading DXE', 'PeiInstall', 'START_MRC', 'EarlyPlatformPch',
-    'BIOS ID:', 'SVOS', 'CentOS', 'Linux version', 'Decompressing',
-    'spark_session', 'SPARK', 'ZSE5_DMR', 'ZeBu', 'zRci',
-    'emu.devices', 'emu_log', 'emulation', 'IDI', 'idi_mux',
-    'Compilation', 'Hardware ready', 'ZSYN',
-    'continue-alone', 'HWRS', 'primecode',
+    'RESET_TEST', 'PPR check',
+    # Stage 0-1: SPARK + sle.simics setup
+    'spark_session', 'SPARK', 'ZSE5_DMR', 'ZSE4_DMR', 'ZeBu', 'zRci',
+    'sle.simics setup_script', 'determine_model.py',
+    'model we are running on is', 'Read the model from emurun',
+    # Stage 2: RTI markers
+    'RTI:',
+    # Stage 3: ZeBu memory loading
+    '-- ZeBu :',
+    # Stage 4: fuse loading + post setup
+    'fuse_load.py', 'post setup_script',
+    # Stage 5: hybrid switch
+    'Enabling simics cores', 'IDI', 'idi_mux', 'HWRS', 'primecode',
+    # Stage 6: BIOS
+    'ExitBootServices', 'DXE IPL', 'Loading DXE', 'PeiInstall',
+    'START_MRC', 'EarlyPlatformPch', 'BIOS ID:', 'debug_port',
+    # Stage 7: OS boot
+    'SVOS', 'CentOS', 'Linux version', 'Decompressing',
+    'Bds', 'GRUB', 'ramdisk', 'vmlinuz',
+    # Reset triggers
     'Reset_BTN', 'AGR event', 'AWR event', 'COLD_RESET',
-    'WARM_RESET', 'GLOBAL_RESET', 'Bds', 'GRUB', 'ramdisk', 'vmlinuz',
+    'WARM_RESET', 'GLOBAL_RESET',
 )
 
 

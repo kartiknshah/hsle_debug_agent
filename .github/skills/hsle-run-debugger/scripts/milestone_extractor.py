@@ -34,34 +34,36 @@ class StageResult:
     notes: str = ""
 
 
-# Stage patterns: more precise than generic grep.
+# Stage patterns: precise markers tuned to actual testbench.log content.
 # (name, compiled_regex, required_for_pass)
-# Patterns are tuned to actual testbench.log content from reference runs.
+# Stages 2-4 have no required markers (informational only); Stage 5
+# hybrid_switch is the critical gate.
 STAGE_PATTERNS = {
     0: [
-        ("spark_session", re.compile(r"spark_session\.log|SPARK.*session", re.I), True),
-        ("zebu_config", re.compile(r"ZSE5_DMR_MCP|ZeBu.*[Cc]onfig|zRci.*init", re.I), True),
+        ("spark_session", re.compile(r"spark_session\.log|SPARK.*session|SPARK Version:", re.I), True),
+        ("zebu_config", re.compile(r"ZSE[45]_DMR_(?:MCP|IMH)|ZeBu.*[Cc]onfig|zRci.*init", re.I), True),
     ],
     1: [
-        ("emu_log_init", re.compile(r"\[emu\.devices\]|emu_log.*open|emulation.*init", re.I), True),
-        ("zse5_device", re.compile(r"ZSE5.*device|zRci.*device|zRci_init|designName", re.I), True),
+        ("sle_simics_setup", re.compile(r"Running sle\.simics setup_script", re.I), True),
+        ("model_detect", re.compile(r"determine_model\.py|model we are running on is|Read the model from emurun\.dut_cfg", re.I), True),
     ],
     2: [
-        ("model_init", re.compile(r"model.*loaded|IDI.*link|socket.*config|hsle.*model", re.I), True),
-        ("idi_connect", re.compile(r"IDI.*connect|idi_mux|VP.*RTL", re.I), False),
+        ("rti_pre_cycle", re.compile(r"RTI:\s*Pre Cycle 0", re.I), False),
+        ("rti_pre_mount", re.compile(r"RTI:\s*Pre Mount", re.I), False),
+        ("rti_mounted", re.compile(r"RTI:\s*Mounted", re.I), False),
     ],
     3: [
-        ("zebu_compile", re.compile(r"Compilation.*complete|ZeBu.*compil|partition.*compil|ZSYN.*done|Hardware ready", re.I), True),
+        ("zebu_memory_load", re.compile(r"-- ZeBu : (?:zServer|simics-common) :", re.I), False),
     ],
     4: [
-        ("simics_run", re.compile(r"simics.*run|simulation.*start|Running.*sim|continue-alone", re.I), True),
-        ("vp_create", re.compile(r"processor.*creat|VP.*creat|x86.*creat|cpu.*object", re.I), False),
+        ("fuse_load_start", re.compile(r"\[fuse_load\.py\].*(?:STARTING|Model:)", re.I), False),
+        ("post_setup_script", re.compile(r"Running post setup_script:", re.I), False),
     ],
     5: [
-        ("reset_phase_1", re.compile(r"RESET_PHASE_1\b", re.I), True),
-        ("reset_phase_3", re.compile(r"RESET_PHASE_3\b", re.I), True),
-        ("reset_phase_6", re.compile(r"RESET_PHASE_6\b", re.I), True),
-        ("idi_mux_enable", re.compile(r"IDI.*[Mm]ux.*enabl", re.I), True),
+        ("reset_phase_1", re.compile(r"RESET_PHASE_1\b", re.I), False),
+        ("reset_phase_3", re.compile(r"RESET_PHASE_3\b", re.I), False),
+        ("reset_phase_end", re.compile(r"RESET_PHASE_6\b|RESET_SEQ_PREPARE_FOR_LOOP", re.I), False),
+        ("hybrid_switch", re.compile(r"IDI.*[Mm]ux.*enabl|Enabling simics cores", re.I), True),
     ],
     6: [
         ("bios_start", re.compile(r"BIOS.*[Ss]tart|SEC phase|debug_port.*0x000[1-9]", re.I), False),

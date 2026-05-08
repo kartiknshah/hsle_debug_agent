@@ -1,0 +1,112 @@
+================================================================================
+          DMR IMH HSLE -- RTL RESET PHASE DETAILED FLOW (STAGE 5)
+          ========================================================
+  Platform  : IMH 1-Socket, 1 or 2 IMH dies, 4 CBB dies
+  Reference : metro_basic_pushpop.0 (26ww07_1, 1imh_1s_4cbb)
+  Source    : reset_phase_marker.simics, dmr_imh_forces.simics
+
+  KEY DIFFERENCES FROM MCP (reset_phase_flow.txt):
+  -------------------------------------------------
+  1. ONLY TWO parallel log streams (NO BOOT_FSM stream)
+  2. Phase 4/5 end markers use PUNIT sequence names (not generic RESET_PHASE_N)
+  3. For 1imh: NO symmetry check needed (single IMH die)
+  4. For 2imh: symmetry check on imh0/imh1 (same as MCP die8/die9)
+  5. NO "Start of RESET_PHASE_6" — hybrid switch triggered by Phase 5 end
+================================================================================
+
+
+================================================================================
+STREAM 1: HWRS (Hardware Reset Sequencer) EVENTS
+================================================================================
+Source: hwrs_tracker (via dmr_imh_forces.simics)
+Format: "[dmr_imh_forces.simics] imh 0 sequencer_log: HWRS - <event> for socket 0 !!"
+
+  For 1imh model: ONLY "imh 0" events (no symmetry check)
+  For 2imh model: "imh 0" AND "imh 1" must both emit each event
+
+--- CHRONOLOGICAL HWRS EVENT SEQUENCE (from reference run) ---
+
+  1. VNN_EARLY_BOOT_DONE asserted for socket 0           (line ~222246)
+  2. Initiating UCIE SB Start-up for socket 0             (line ~222282)
+  3. START_BOOT_SEQ register is set. S3M Start Boot Seq   (line ~222631)
+  4. REFCLK_READY asserted by HWRS to start PWRGOOD      (line ~222787)
+  5. RESET_PHASE_3_INFRA is complete for socket 0         (line ~222794)
+  6. RESET_PHASE_3_D2D is complete for socket 0           (line ~222842)
+  7. Initiate PLL Reset Pull for socket 0                 (line ~222881)
+  8. Initiate PLL Bringup for socket 0                    (line ~222883)
+  9. RESET_PHASE_3_INFRA_CFG is complete for socket 0 !! Reached end of phase 3  (line ~222886)
+  10. End of Feature_IP_Bringup for socket 0 !! Reached end of HWRS_Ph4          (line ~222902)
+
+  PHASE COMPLETION MARKERS (via PUNIT sequencer, NOT HWRS):
+  11. RESET_SEQ_MARK_PHASE4_COMPLETE...Reached end of phase 4  (line ~223695)
+  12. RESET_SEQ_PREPARE_FOR_LOOP...Reached end of phase 5      (line ~224332)
+
+  KEY GREP:
+    grep "sequencer_log: HWRS" testbench.log
+    grep "RESET_SEQ_MARK_PHASE4_COMPLETE\|RESET_SEQ_PREPARE_FOR_LOOP" testbench.log
+
+  SYMMETRY CHECK (2imh only):
+    grep "sequencer_log: HWRS" testbench.log | grep -oP "imh\s*\d+" | sort | uniq -c
+    # Both imh 0 and imh 1 must have equal counts. Unequal = one die stalled.
+
+
+================================================================================
+STREAM 2: IMH PRIMECODE STATES
+================================================================================
+Source: primecode_tracker (via primecode_monitors.simics)
+Format: "N cycles - imh primecode state <STATE> completed for socket 0 (0xHEX)"
+
+  For 1imh model: single stream, no symmetry check
+  For 2imh model: must complete for both die instances
+
+--- PRIMECODE STATE SEQUENCE (from reference run, 1imh) ---
+
+  State 0x01: CLEAR_HPM_SRAM
+  State 0x02: FUSE_PULL
+  State 0x03: FUSE_POPULATE
+  State 0x04: IMH_EARLY_SURVIVABILITY
+  State 0x05: FUSE_PULL_PUNIT_LOCK_BITS
+  State 0x06: SVID_ACTIONS
+  State 0x07: CONFIGURE_HPM
+  State 0x08: HPM_CREDIT_INIT_IMH_SYNC
+  State 0x09: CONFIGURE_CXL_HPM
+  State 0x0a: HPM_ENFORCE_AGENT_ID
+  State 0x0b: READ_POC_STRAPS
+  State 0x0c: READ_EPOC_VDM_STRAPS
+  State 0x0d: DISTRIBUTE_STRAPS_IMH_SYNC
+  State 0x0e: RESOLVE_STRAPS
+  State 0x0f: RESOLVE_IP_DISABLES
+  State 0x10: APPLY_IP_DISABLES
+  State 0x11: REF_CLK_READY_HANDSHAKE        ← triggers HWRS REFCLK_READY
+  State 0x12: SYNC_DISABLES_UPSTREAM
+  State 0x13: WAIT_FOR_CBB_D2D_READY         ← after RESET_PHASE_3_D2D
+  State 0x14: HPM_CREDIT_INIT_CBB_SYNC       ← CBB credits established
+  State 0x15: FEATURE_IP_BRING_UP            ← after HWRS_Ph4 end
+  State 0x16: FW_INIT_PH4
+  ... (continues through phase 4/5 to MARK_PHASE4_COMPLETE and PREPARE_FOR_LOOP)
+
+  KEY GREP:
+    grep "imh primecode state" testbench.log | tail -10
+    # Last state = stall point if run hung during Stage 5
+
+  STALL DIAGNOSIS (same approach as MCP but single-die for 1imh):
+    - Last state before hang = primecode stall point
+    - Check associated HWRS event that should follow
+    - For 2imh: compare state counts per die
+
+
+================================================================================
+COMMON IMH STAGE 5 FAILURE SIGNATURES
+================================================================================
+
+| Last primecode state | Last HWRS event | Diagnosis |
+|---|---|---|
+| None (no states) | VNN_EARLY_BOOT_DONE only | S3M/IBL boot failure; check S3M fmod |
+| 0x02 FUSE_PULL | VNN_EARLY_BOOT_DONE | Fuse loading failed; check fuse_load.py logs |
+| 0x11 REF_CLK_READY_HANDSHAKE | No REFCLK_READY | PLL handshake stall |
+| 0x13 WAIT_FOR_CBB_D2D_READY | RESET_PHASE_3_INFRA done, no D2D | UCIe D2D link train failure |
+| 0x14 HPM_CREDIT_INIT_CBB_SYNC | D2D complete | CBB credit deadlock |
+| 0x15 FEATURE_IP_BRING_UP | HWRS_Ph4 end seen | Feature IP bringup hang |
+| 0x16 FW_INIT_PH4 | HWRS_Ph4 end seen | Phase 4 FW init stall |
+| Phase4 complete, no Phase5 | Phase4 end event | Phase 5 entry failure |
+| Phase5 complete, no cores enabled | Phase5 end event | Hybrid switch failure; check hsle.simics |

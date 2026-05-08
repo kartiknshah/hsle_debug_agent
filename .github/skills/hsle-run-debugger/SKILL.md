@@ -1,13 +1,16 @@
 ---
 name: hsle-run-debugger
-description: Debug DMR MCP ICI HSLE emulation runs by analyzing testbench.log against the known-good execution flow (flow.txt). Identifies which stage failed, extracts failure signatures, and provides root-cause triage with debug recommendations. Use when a user provides an HSLE run directory path and asks to debug, diagnose, or analyze a failing or hanging HSLE run.
+description: Debug DMR HSLE emulation runs (MCP and IMH models) by analyzing testbench.log against the known-good execution flow. Identifies which stage failed, extracts failure signatures, and provides root-cause triage with debug recommendations. Supports MCP ICI (ZSE5) and IMH (ZSE4) model variants. Use when a user provides an HSLE run directory path and asks to debug, diagnose, or analyze a failing or hanging HSLE run.
 ---
 
 # HSLE Run Debugger
 
-**Purpose**: Diagnose failures in DMR MCP ICI HSLE (ZeBu ZSE5) emulation runs by systematically
-comparing `testbench.log` milestones against the golden execution flow defined in
-`.github/skills/hsle-run-debugger/flow.txt`.
+**Purpose**: Diagnose failures in DMR HSLE (ZeBu) emulation runs by systematically
+comparing `testbench.log` milestones against the golden execution flow.
+
+**Supported models**:
+- **MCP** (`mcp_1s_ici`): ZSE5 — uses `flow.txt`
+- **IMH** (`1imh_1s_4cbb`, `2imh_1s_4cbb`, etc.): ZSE4 — uses `flow_imh.txt`
 
 ## When to Use
 
@@ -30,16 +33,52 @@ The primary artifact is `testbench.log` (or `testbench.log.gz`) inside that dire
 
 ---
 
+## Model Detection (MUST DO FIRST)
+
+Before analyzing milestones, determine which model the run uses:
+
+```bash
+# Check emurun.dut_cfg for model_name
+grep "model_name\|model_build_cfg" <run_dir>/test/emurun.dut_cfg 2>/dev/null \
+  || zgrep "model_name\|model_build_cfg" <run_dir>/emurun.dut_cfg.gz 2>/dev/null
+
+# Fallback: check determine_model.py output in testbench.log
+grep "determine_model.py.*Read the model" <run_dir>/testbench.log | head -2
+```
+
+**Classification rules:**
+| model_name | Model family | Golden flow | ZeBu gen |
+|---|---|---|---|
+| `mcp_1s_ici` | MCP | `flow.txt` | ZSE5 |
+| `*imh_*` (any IMH variant) | IMH | `flow_imh.txt` | ZSE4 |
+
+If model_build_cfg contains `"IMH"` → IMH model; if it contains `"MCP"` → MCP model.
+
+> **CRITICAL**: "IMH2" in path/folder/script names (e.g., `IMH2_M4C_SideModel`,
+> `imh2_svos_post.simics`, `26ww6.5_IMH2_4CBB`) means the **IMH Gen2 silicon
+> variant** — it does NOT describe die topology. Do not try to determine die
+> count from path names, script names, or folder names. The only thing the agent
+> needs to determine is **MCP vs IMH** to select the correct flow file.
+
+If model_build_cfg contains `"IMH"` → IMH model; if it contains `"MCP"` → MCP model.
+
+---
+
 ## Golden Flow Reference
 
-The golden execution flow is documented in:
+**For MCP runs**, the golden execution flow is documented in:
 ```
 .github/skills/hsle-run-debugger/flow.txt
 ```
 
-This file defines **9 stages** (STAGE 0–8) of the HSLE execution, milestone markers for each
-stage, and the expected chronological order. **Read this file at the start of every debug
-session** to have the full reference before running any greps.
+**For IMH runs**, use:
+```
+.github/skills/hsle-run-debugger/flow_imh.txt
+```
+
+Both define **9 stages** (STAGE 0–8) of the HSLE execution, milestone markers for each
+stage, and the expected chronological order. **Read the appropriate file at the start of
+every debug session** to have the full reference before running any greps.
 
 
 For Stage 6 (BIOS boot) sub-phase analysis, additionally read:
@@ -65,10 +104,11 @@ pinpoint the exact sub-phase where BIOS stopped.
 
 For Stage 5 (RTL reset phases) sub-event analysis, additionally read:
 ```
-.github/skills/hsle-run-debugger/reset_phase_flow.txt
+.github/skills/hsle-run-debugger/reset_phase_flow.txt       (MCP — 3 streams: BOOT_FSM + HWRS + Primecode)
+.github/skills/hsle-run-debugger/reset_phase_flow_imh.txt   (IMH — 2 streams: HWRS + Primecode only)
 ```
 
-This file documents **three parallel log streams** inside `testbench.log` during Stage 5:
+**For MCP**, this file documents **three parallel log streams** inside `testbench.log` during Stage 5:
 
 | Stream | Log prefix | Symmetry rule |
 |--------|-----------|---------------|
@@ -76,7 +116,14 @@ This file documents **three parallel log streams** inside `testbench.log` during
 | HWRS events | `sequencer_log: HWRS -` | Both **imh0 AND imh1** must emit each event |
 | IMH Primecode states | `imh primecode state` | Both **die8 AND die9** must complete each state |
 
-**Read `reset_phase_flow.txt` whenever Stage 5 is the failing stage**, to identify the exact
+**For IMH**, this file documents **two parallel log streams** (NO BOOT_FSM):
+
+| Stream | Log prefix | Symmetry rule |
+|--------|-----------|---------------|
+| HWRS events | `sequencer_log: HWRS -` | 1imh: single stream; 2imh: imh0 + imh1 |
+| IMH Primecode states | `imh primecode state` | 1imh: single stream ("socket 0"); 2imh: both |
+
+**Read the appropriate `reset_phase_flow*.txt` whenever Stage 5 is the failing stage**, to identify the exact
 sub-event and die/IMH instance where the hang occurred.
 
 
@@ -260,7 +307,7 @@ markers** appear. The first stage with missing markers is the failure point.
 | Marker | Grep pattern | Indicates |
 |--------|-------------|-----------|
 | Script load | `[sle.simics] Project Simics script loading` | sle.simics executing |
-| Model detection | `model we are running on is` | determine_model.py OK |
+| Model detection | `model we are running on is` or `Read the model from emurun.dut_cfg` | determine_model.py OK |
 | RTI Pre Cycle 0 | `RTI: Pre Cycle 0` | Cycle tracking started |
 | RTI Hit cycle_0 | `RTI: Hit cycle_0` | Engine initialized |
 | Pre Mount | `RTI: Pre Mount` | About to connect to ZeBu |
@@ -286,6 +333,8 @@ markers** appear. The first stage with missing markers is the failure point.
 - Disk image not found → Check `os_image` / `disk_image` parameter resolution
 
 #### STAGE 3: hsle.simics — Hybrid Core Setup
+
+**MCP markers:**
 | Marker | Grep pattern | Indicates |
 |--------|-------------|-----------|
 | Hybrid Xtor Setup | `[hsle.simics] Hybrid Xtor Setup` | IDI xtor configuration |
@@ -296,9 +345,22 @@ markers** appear. The first stage with missing markers is the failure point.
 | Enabling Hybrid Cores | `[hsle.simics] Enabling Hybrid Core` | About to enable VP cores |
 | IDI Mux enabled | `[hsle.simics] IDI Mux enabled` | **HYBRID SWITCH COMPLETE** |
 
+**IMH markers** (different hybrid switch sequence — NO IDI Mux, NO UCLK ungating):
+| Marker | Grep pattern | Indicates |
+|--------|-------------|-----------|
+| FW BYPASS | `[hsle.simics]  FW BYPASS Override S3M` | S3M fmod bypass set |
+| Waiting for RTL Core Reset | `[hsle.simics]  Waiting for RTL Core Reset` | Waiting for reset vector |
+| Reached end of phase 5 | `Reached end of phase 5` | RTL reset phases done |
+| penable -all | `penable -all` | VP cores re-enabled |
+| Enabling simics cores | `[hsle.simics] Enabling simics cores` | **HYBRID SWITCH COMPLETE** |
+
+> **KEY DIFFERENCE**: MCP uses `IDI Mux enabled` as the hybrid switch completion marker.
+> IMH uses `Enabling simics cores` (no IDI Mux exists in IMH topology).
+
 **Common Stage 3 failures**:
 - Stuck at "Waiting for RTL Core Reset" → RTL never reached reset vector; check reset phase progression (Stage 5)
-- IDI Mux never enabled → Hybrid switch failed; check IDI xtor credits, UCLK ungating
+- (MCP) IDI Mux never enabled → Hybrid switch failed; check IDI xtor credits, UCLK ungating
+- (IMH) "Enabling simics cores" never appears → Phase 5 end not detected; check reset phases
 
 #### STAGE 4: CBB Reset Flow (parallel branch)
 | Marker | Grep pattern | Indicates |
@@ -306,6 +368,8 @@ markers** appear. The first stage with missing markers is the failure point.
 | CBB reset branch | `script-branch.*cbb_reset` or CBB-specific logs | CBB `sle.simics` running |
 
 #### STAGE 5: RTL Reset Phases
+
+**MCP markers:**
 | Marker | Grep pattern | Indicates |
 |--------|-------------|-----------|
 | Phase 1 start | `Start of RESET_PHASE_1` | S3M/IBL booting |
@@ -317,6 +381,24 @@ markers** appear. The first stage with missing markers is the failure point.
 | Phase 5 end | `End of RESET_PHASE_5` | Late init done |
 | Phase 6 start | `Start of RESET_PHASE_6` | Core release → triggers hybrid switch |
 
+**IMH markers** (different phase end markers, NO BOOT_FSM stream):
+| Marker | Grep pattern | Indicates |
+|--------|-------------|-----------|
+| Phase 3 INFRA | `RESET_PHASE_3_INFRA is complete` | Infra init done |
+| Phase 3 D2D | `RESET_PHASE_3_D2D is complete` | UCIe D2D link trained |
+| Phase 3 INFRA_CFG | `RESET_PHASE_3_INFRA_CFG is complete` | Infra config done |
+| Phase 4 end | `RESET_SEQ_MARK_PHASE4_COMPLETE` | Memory init done |
+| Phase 5 end | `RESET_SEQ_PREPARE_FOR_LOOP` | Late init done → triggers hybrid switch |
+
+> **KEY IMH DIFFERENCES for Stage 5:**
+> - NO `Start of RESET_PHASE_1`, `End of RESET_PHASE_2`, `Start of RESET_PHASE_6` markers
+> - Phase 4 end = `RESET_SEQ_MARK_PHASE4_COMPLETE` (not `End of RESET_PHASE_4`)
+> - Phase 5 end = `RESET_SEQ_PREPARE_FOR_LOOP` (not `End of RESET_PHASE_5`)
+> - NO BOOT_FSM stream — only 2 log streams (HWRS + Primecode)
+> - For 1imh models: NO die symmetry check needed (single IMH die)
+> - For 2imh models: symmetry check on imh0/imh1 (same concept as MCP)
+> - Use `reset_phase_flow_imh.txt` instead of `reset_phase_flow.txt` for drill-down
+
 **Common Stage 5 failures** (high-level — see `reset_phase_flow.txt` for detailed sub-event drill-down):
 - Stuck before Phase 1 → S3M boot failure; check S3M fmod bypass, IBL loading
 - Phase 2 never ends → PUnit primecode hang; check primecode image version
@@ -325,13 +407,16 @@ markers** appear. The first stage with missing markers is the failure point.
 - Phase 4 hang → DDR memory training failure; check DFI xtors, DIMM config
 - Phase 5 hang → Late coherency setup failure; check UPI/fabric init
 
-> **Stage 5 Deep Dive**: When any Phase 3--5 milestone is missing, load `reset_phase_flow.txt`
-> and run the three-stream drill-down (Step 4 below). Key checks:
-> - **BOOT_FSM last sub-event** -- pinpoints exactly where phase1 stalled within S3M boot
-> - **HWRS symmetry** -- `grep "sequencer_log: HWRS" | grep -oP "imh\\s*\\d+" | sort | uniq -c`
->   Unequal counts for imh0/imh1 = one IMH die stalled
-> - **Primecode symmetry** -- `grep "imh primecode state" | grep -oP "die\\d+" | sort | uniq -c`
->   Unequal counts for die8/die9 = one IMH die stalled; last state = stall point
+> **Stage 5 Deep Dive**: When any Phase 3--5 milestone is missing, load the appropriate
+> reset phase flow file (`reset_phase_flow.txt` for MCP, `reset_phase_flow_imh.txt` for IMH)
+> and run the stream drill-down (Step 4 below). Key checks:
+> - **BOOT_FSM last sub-event** (MCP only) -- pinpoints exactly where phase1 stalled within S3M boot
+> - **HWRS symmetry** (MCP: imh0/imh1; 2imh: imh0/imh1; 1imh: N/A) --
+>   `grep "sequencer_log: HWRS" | grep -oP "imh\\s*\\d+" | sort | uniq -c`
+>   Unequal counts = one IMH die stalled
+> - **Primecode symmetry** (MCP: die8/die9; 2imh: check both; 1imh: single stream) --
+>   `grep "imh primecode state" | grep -oP "die\\d+" | sort | uniq -c`
+>   Unequal counts = one IMH die stalled; last state = stall point
 >
 > **Warm Reset (SWR)**: If run includes a warm reset cycle, `Inform WARM` lines appear in the
 > BOOT_FSM stream. Warm path omits `BOOT_FSM_DFX_AGG_FUSE_PULL` and requires `BOOT_FSM_IS_DOWN`
@@ -357,7 +442,7 @@ grep "debug_port.bank.backport" "$TBLOG" | head -120
 
 | Sub-stage | Marker | Grep pattern | Indicates |
 |-----------|--------|-------------|----------| 
-| **6.0 SEC** | Hybrid switch done | `IDI Mux enabled` | VP cores start fetching BIOS |
+| **6.0 SEC** | Hybrid switch done | `IDI Mux enabled` (MCP) or `Enabling simics cores` (IMH) | VP cores start fetching BIOS |
 | 6.0 SEC | BIOS exec started | `Start of uBIOS` | Simics confirms VP instruction fetch began |
 | 6.0 SEC | BIOS-only ACED | `End of RESET_PHASE_7` / `END_OF_BIOS` | BIOS-only test passed; absent in SVOS runs |
 | 6.0 SEC | SEC alive | debug_port `0x0001` | SEC ROM execution started |
@@ -748,7 +833,12 @@ Write the summary to: `result/<run_name>_hsle_debug_agent_summary.txt`
 3. For PASS runs, set "N/A" for failure analysis fields
 4. For reset scenarios with back-to-back resets, duplicate the reset cycle block
    for each additional cycle
-5. Write the completed summary to the output file
+5. **Write the completed summary using the `create_file` tool** (VS Code file
+   system API). Do NOT use terminal commands (`cat >`, heredocs, `echo`,
+   `python3 -c`) to write the summary — the default shell is **tcsh**, which
+   does not support heredocs and mangles special characters. If terminal-based
+   writing is absolutely required, write a `.py` helper script to disk first
+   using `create_file`, then execute it with `python3`.
 6. Confirm to the user: "Debug summary written to: <path>"
 
 #### Field Guidelines
