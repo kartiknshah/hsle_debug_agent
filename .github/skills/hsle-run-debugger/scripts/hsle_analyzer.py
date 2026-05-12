@@ -123,6 +123,8 @@ RESET_PATTERNS = {
     # Stage 13: Termination
     "auto_exit":          re.compile(r"Auto exit triggered|RESET_TEST_COMPLETE"),
     "rca_check":          re.compile(r"rca_check_found:\s*(\d+)"),
+    "primecode_state_die8": re.compile(r"imh primecode state (\S+) completed for socket \d+ die8"),
+    "primecode_state_die9": re.compile(r"imh primecode state (\S+) completed for socket \d+ die9"),
 }
 
 # Lines to skip (noise from wait-for-log registrations, hap callbacks)
@@ -198,6 +200,11 @@ class ResetCycle:
     bios_first_fetch_line: int = 0
     icecode_reload_line: int = 0
     hwrs_complete_line: int = 0
+    # Stage 10 - primecode last-state tracking (die8=imh8, die9=imh9)
+    last_primecode_imh8: str = ""
+    last_primecode_imh8_line: int = 0
+    last_primecode_imh9: str = ""
+    last_primecode_imh9_line: int = 0
     # Stage 11
     idi_mux_line: int = 0
     bios_aced_line: int = 0
@@ -320,6 +327,17 @@ def analyze_run(run_dir, generate_summary=False, output_path=None):
                         reset_events.append((total_lines, pname, m.groups(),
                                             stripped, list(context_buf[-5:])))
                         break
+
+            # --- IMH Primecode state tracking (Stage 10 RTL phases) ---
+            if first_trigger_line and 'imh primecode state' in line:
+                m8 = RESET_PATTERNS["primecode_state_die8"].search(line)
+                if m8:
+                    reset_events.append((total_lines, "primecode_state_die8",
+                                         (m8.group(1),), stripped, []))
+                m9 = RESET_PATTERNS["primecode_state_die9"].search(line)
+                if m9:
+                    reset_events.append((total_lines, "primecode_state_die9",
+                                         (m9.group(1),), stripped, []))
     
     # Build stage results
     stages = _build_stage_results(stage_found)
@@ -566,6 +584,13 @@ def _fill_marker(current, evt_type, groups, evt_line, ctx):
         # Special case: global_sequence upgrades cycle type to GLOBAL
         if evt_type == "global_sequence":
             current.reset_type = "GLOBAL"
+        # Primecode state: track running last-state per die (IMH8/IMH9)
+        if evt_type == "primecode_state_die8" and groups:
+            current.last_primecode_imh8 = groups[0]
+            current.last_primecode_imh8_line = evt_line
+        elif evt_type == "primecode_state_die9" and groups:
+            current.last_primecode_imh9 = groups[0]
+            current.last_primecode_imh9_line = evt_line
         return
     
     # Only fill if not already set (first occurrence per cycle)
@@ -1245,6 +1270,13 @@ def _cycle_evidence_lines(cycle):
         evidence.append(f"Last reached marker: {label} at line {line}")
     if cycle.failure_detail:
         evidence.append(f"Failure detail: {cycle.failure_detail}")
+    if cycle.failing_stage == 10:
+        imh8 = (f"Last primecode state imh8 (die8): {cycle.last_primecode_imh8} @ line {cycle.last_primecode_imh8_line}"
+                if cycle.last_primecode_imh8 else "Last primecode state imh8 (die8): NOT REACHED")
+        imh9 = (f"Last primecode state imh9 (die9): {cycle.last_primecode_imh9} @ line {cycle.last_primecode_imh9_line}"
+                if cycle.last_primecode_imh9 else "Last primecode state imh9 (die9): NOT REACHED")
+        evidence.append(imh8)
+        evidence.append(imh9)
     for key, value in cycle.flow_checks.items():
         if value != "PASS":
             evidence.append(f"Flow check {key}: {value}")
@@ -1288,7 +1320,7 @@ def _reset_recommendations(cycle):
     recs = {
         8: "  - Verify post-setup script loaded\n  - Check os_reset_triggers.simics dispatch table",
         9: f"  - Check serconsole for errors before hardware entry\n  - Verify {'PLTRST_SYNC' if rtype != 'GLOBAL' else 'GBL_RST_WARN'} completion\n  - Check if VP quiesce succeeded",
-        10: "  - See reset_phase_flow.txt for HWRS sub-phase detail\n  - Check BOOT_FSM stuck state (which 0x?? value)\n  - Verify both imh8/imh9 primecode symmetry",
+        10: "  - See reset_phase_flow.txt for HWRS sub-phase detail\n  - Check BOOT_FSM stuck state (which 0x?? value)\n",
         11: "  - Check if IDI Mux was enabled after RESET_PHASE_6\n  - See bios_flow.txt for BIOS sub-phases\n  - Review auto-generated BIOS Issue Analysis section above\n  - Check for BIOS hang vs VP/RTL handoff issue",
         12: "  - Check serconsole for second OS boot errors\n  - Verify PPR workload starts on second boot\n  - Check for kernel panic or OOM",
     }
