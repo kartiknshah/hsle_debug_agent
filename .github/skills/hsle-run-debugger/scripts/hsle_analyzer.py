@@ -263,8 +263,8 @@ def analyze_run(run_dir, generate_summary=False, output_path=None):
             # FAST PRE-FILTER: skip lines without any keyword
             if not any(kw in line for kw in _PREFILTER_KEYWORDS):
                 continue
-            # Skip noise
-            if NOISE_RE.search(line):
+            # Skip noise (preserve primecode-state lines for Stage 10 evidence)
+            if NOISE_RE.search(line) and "imh primecode state" not in line:
                 continue
             
             stripped = line.strip()[:250]
@@ -706,6 +706,23 @@ def _validate_flow_type(cycle):
         checks["fuse_reload"] = "PASS" if cycle.fuse_reload_line else "WARN"
         checks["fake_go_rsp"] = "PASS" if cycle.fake_go_rsp_line else "WARN"
         checks["icecode_reload"] = "PASS" if cycle.icecode_reload_line else "WARN"
+
+    matrix = _load_reset_type_matrix().get(cycle.reset_type.lower(), {})
+    observed = {
+        "PLTRST_SYNC": bool(cycle.pltrst_sync_line),
+        "GBL_RST_WARN": bool(cycle.gbl_rst_warn_line),
+        "GLOBAL_RESET_N": bool(cycle.global_reset_n_line),
+        "SLP_S5/S4/S3": bool(cycle.slp_assertion_line),
+        "PWRGOOD-deassert": bool(cycle.pwrgood_deassert_line),
+        "fuse-reload": bool(cycle.fuse_reload_line),
+        "icecode-reload": bool(cycle.icecode_reload_line),
+        "fake-go-rsp": bool(cycle.fake_go_rsp_line),
+    }
+    for feature in matrix.get("features", []):
+        checks[f"matrix_expect_{feature}"] = "PASS" if observed.get(feature) else "WARN"
+    for feature in matrix.get("no_features", []):
+        checks[f"matrix_avoid_{feature}"] = "PASS" if not observed.get(feature) else "UNEXPECTED"
+
     cycle.flow_checks = checks
 
 
@@ -842,9 +859,11 @@ def _run_bios_issue_analyzer(log_path):
 
 
 def _cold_root_cause(stage):
+    stage_name = _load_flow_stages().get(stage, "")
+    stage_label = f" ({stage_name})" if stage_name else ""
     mapping = {
-        6: "  BIOS boot did not complete to ExitBootServices/BIOS_TAIL_ACED, indicating a BIOS-side stall in Stage 6.",
-        7: "  BIOS completed but OS/test workload did not reach PPR_TEST_DONE, indicating post-BIOS boot failure.",
+        6: f"  BIOS boot did not complete to ExitBootServices/BIOS_TAIL_ACED, indicating a BIOS-side stall in Stage 6{stage_label}.",
+        7: f"  BIOS completed but OS/test workload did not reach PPR_TEST_DONE, indicating post-BIOS boot failure in Stage 7{stage_label}.",
     }
     return mapping.get(stage, "  Failure occurred before run completion; inspect stage markers and surrounding logs.")
 
@@ -909,7 +928,12 @@ def _analyze_io_xtor_consistency(run_dir, log_path):
     pcie_requested = False
     cxl_xtor_enabled = False
     pcie_xtor_enabled = False
-    pcie_disabled = False
+    pcie_disable_explicit = False
+
+    disable_patterns = [
+        re.compile(r"\bdisable_pcie\b\s*[=:]\s*(1|true|yes|on)\b", re.I),
+        re.compile(r"\bsetenv\s+disable_pcie\s+1\b", re.I),
+    ]
 
     for raw in cfg_text.splitlines():
         line = raw.strip()
@@ -917,10 +941,9 @@ def _analyze_io_xtor_consistency(run_dir, log_path):
             continue
         low = line.lower()
 
-        if "disable_pcie" in low and re.search(r"disable_pcie\s+1", low):
-            pcie_disabled = True
-        if "non_pcie" in low:
-            pcie_disabled = True
+        # Only treat explicit disable knobs as disable intent.
+        if any(p.search(low) for p in disable_patterns):
+            pcie_disable_explicit = True
 
         if "=" not in line:
             continue
@@ -943,17 +966,21 @@ def _analyze_io_xtor_consistency(run_dir, log_path):
     findings = []
     recs = []
 
-    if cxl_requested and pcie_disabled:
-        findings.append("  - Config mismatch: CXL endpoint/bifurcation requested while PCIe is disabled (DISABLE_PCIE/non_pcie).")
-        recs.append("  - Align config: if CXL device is present in io_bifurcation, do not disable PCIe fabric in run settings.")
+    pcie_active = pcie_xtor_enabled or xtor_seen
+    if pcie_disable_explicit and pcie_active:
+        findings.append("  - Config contradiction: PCIe disabled via DISABLE_PCIE, but PCIe/CXL xtor is enabled in config/runtime.")
+        recs.append("  - Harmonize run knobs: either keep DISABLE_PCIE=0 or disable PCIe/CXL xtors and related topology entries.")
+    elif pcie_disable_explicit and (cxl_requested or pcie_requested):
+        if cxl_requested:
+            findings.append("  - Config mismatch: CXL endpoint/bifurcation requested while PCIe is explicitly disabled.")
+            recs.append("  - Align config: if CXL device is present in io_bifurcation, do not disable PCIe fabric in run settings.")
+        if pcie_requested:
+            findings.append("  - Config mismatch: PCIe topology requested while PCIe is explicitly disabled.")
+            recs.append("  - Remove DISABLE_PCIE override or update topology to match disabled PCIe mode.")
 
     if cxl_requested and not (cxl_xtor_enabled or pcie_xtor_enabled or xtor_seen):
         findings.append("  - Config mismatch: CXL requested but no CXL/PCIe xtor enable detected in config or runtime logs.")
         recs.append("  - Enable required transactors: CXL/PCIe xtor must be enabled when CXL topology is configured.")
-
-    if pcie_requested and pcie_disabled:
-        findings.append("  - Config mismatch: PCIe topology requested while PCIe is explicitly disabled.")
-        recs.append("  - Remove DISABLE_PCIE/non_pcie override or update topology to match disabled PCIe mode.")
 
     if findings and xtor_line:
         findings.append(f"  - Runtime xtor evidence present: {xtor_line}")
@@ -980,6 +1007,7 @@ def _render_cold_boot_template(analysis):
     recommendations = "  - No action required."
     root_cause = "  N/A"
     bios_analysis = "N/A"
+    bios_substage = "N/A"
     if isinstance(failing_stage, int):
         r = stages[failing_stage]
         if r.milestones:
@@ -989,6 +1017,7 @@ def _render_cold_boot_template(analysis):
         root_cause = _cold_root_cause(failing_stage)
         recommendations = _cold_boot_recommendations(failing_stage)
         if failing_stage in (6, 7):
+            bios_substage = _infer_bios_subphase(stages.get(6))
             bios_analysis = _run_bios_issue_analyzer(log_path)
 
         cfg_check = _analyze_io_xtor_consistency(run_dir, log_path)
@@ -1018,6 +1047,7 @@ def _render_cold_boot_template(analysis):
         "stage8": stage8,
         "failing_stage": str(failing_stage),
         "failing_substage": str(failing_substage),
+        "bios_substage": bios_substage,
         "last_console_line": last_console_line,
         "last_post_code": "N/A",
         "last_cycle": "N/A",
@@ -1025,10 +1055,12 @@ def _render_cold_boot_template(analysis):
         "silence_gap": "N/A",
         "signature": signature,
         "evidence": evidence,
+        "primecode_states": "    N/A",
         "root_cause": root_cause,
         "bios_analysis": bios_analysis,
         "recommendations": recommendations,
         "log_evidence": _cold_log_evidence(stages, failing_stage),
+        "reference_usage": _reference_usage_block(info, stages),
     }
 
     return _load_template("summary_cold_boot.txt").format(**placeholders)
@@ -1077,6 +1109,7 @@ def _render_reset_template(analysis):
     log_evidence = "\n".join(f"  - {x}" for x in _cycle_log_evidence(failing)) if failing else "  - No failing cycle."
 
     bios_analysis = "N/A"
+    bios_substage = _infer_bios_subphase(stages.get(6)) if info.get("reset_origin") == "BIOS_INITIATED" else "N/A"
     if failing and failing.failing_stage in (6, 7, 11):
         bios_analysis = _run_bios_issue_analyzer(log_path)
 
@@ -1119,9 +1152,9 @@ def _render_reset_template(analysis):
         "additional_reset_cycles": _render_additional_reset_cycles(cycles),
         "failing_stage": str(failing_stage),
         "failing_substage": str(failing_substage),
+        "bios_substage": bios_substage,
         "reset_origin": info["reset_origin"],
         "first_boot_stage": _stage_display(stages, 6),
-        "bios_substage": str(failing_substage),
         "cf9_value": first_cycle.cf9_value or "N/A",
         "gbl_etr3": "N/A",
         "reset_class": first_cycle.reset_type,
@@ -1142,10 +1175,12 @@ def _render_reset_template(analysis):
         "silence_gap": "N/A",
         "signature": signature,
         "evidence": evidence,
+        "primecode_states": _primecode_states_block(failing),
         "root_cause": root_cause,
         "bios_analysis": bios_analysis,
         "recommendations": recommendations,
         "log_evidence": log_evidence,
+        "reference_usage": _reference_usage_block(info, stages, failing),
     }
 
     return _load_template("summary_reset_scenario.txt").format(**placeholders)
@@ -1270,13 +1305,6 @@ def _cycle_evidence_lines(cycle):
         evidence.append(f"Last reached marker: {label} at line {line}")
     if cycle.failure_detail:
         evidence.append(f"Failure detail: {cycle.failure_detail}")
-    if cycle.failing_stage == 10:
-        imh8 = (f"Last primecode state imh8 (die8): {cycle.last_primecode_imh8} @ line {cycle.last_primecode_imh8_line}"
-                if cycle.last_primecode_imh8 else "Last primecode state imh8 (die8): NOT REACHED")
-        imh9 = (f"Last primecode state imh9 (die9): {cycle.last_primecode_imh9} @ line {cycle.last_primecode_imh9_line}"
-                if cycle.last_primecode_imh9 else "Last primecode state imh9 (die9): NOT REACHED")
-        evidence.append(imh8)
-        evidence.append(imh9)
     for key, value in cycle.flow_checks.items():
         if value != "PASS":
             evidence.append(f"Flow check {key}: {value}")
@@ -1284,6 +1312,216 @@ def _cycle_evidence_lines(cycle):
         evidence.extend(cycle.failure_context[-3:])
     return evidence
 
+
+def _load_primecode_states():
+    cache = getattr(_load_primecode_states, "_cache", None)
+    if cache is not None:
+        return cache
+
+    path = Path(__file__).resolve().parent.parent / "primecode_states.txt"
+    ordered = []
+    by_name = {}
+    if path.exists():
+        for raw in path.read_text(errors="replace").splitlines():
+            line = raw.strip()
+            m = re.match(r"^(0x[0-9a-fA-F]+)\s+([A-Z0-9_]+)$", line)
+            if not m:
+                continue
+            hex_id = m.group(1).lower()
+            name = m.group(2)
+            by_name[name] = len(ordered)
+            ordered.append((hex_id, name))
+
+    cache = (ordered, by_name)
+    _load_primecode_states._cache = cache
+    return cache
+
+
+def _primecode_state_meta(state_name):
+    if not state_name:
+        return None, None, None
+    ordered, by_name = _load_primecode_states()
+    idx = by_name.get(state_name)
+    if idx is None:
+        return None, None, None
+    current_hex, _ = ordered[idx]
+    next_item = ordered[idx + 1] if idx + 1 < len(ordered) else None
+    return idx, current_hex, next_item
+
+
+def _primecode_states_block(cycle):
+    if not cycle or cycle.failing_stage != 10:
+        return "    N/A"
+
+    idx8, hex8, next8 = _primecode_state_meta(cycle.last_primecode_imh8)
+    idx9, hex9, next9 = _primecode_state_meta(cycle.last_primecode_imh9)
+
+    imh8 = (
+        f"    IMH8 (die8): {cycle.last_primecode_imh8} [{hex8}] @ line {cycle.last_primecode_imh8_line}"
+        if cycle.last_primecode_imh8 and hex8 else
+        f"    IMH8 (die8): {cycle.last_primecode_imh8} @ line {cycle.last_primecode_imh8_line}"
+        if cycle.last_primecode_imh8 else
+        "    IMH8 (die8): N/A (not reached)"
+    )
+    imh9 = (
+        f"    IMH9 (die9): {cycle.last_primecode_imh9} [{hex9}] @ line {cycle.last_primecode_imh9_line}"
+        if cycle.last_primecode_imh9 and hex9 else
+        f"    IMH9 (die9): {cycle.last_primecode_imh9} @ line {cycle.last_primecode_imh9_line}"
+        if cycle.last_primecode_imh9 else
+        "    IMH9 (die9): N/A (not reached)"
+    )
+
+    imh8_next = (
+        f"    IMH8 next expected: {next8[1]} [{next8[0]}]"
+        if next8 else "    IMH8 next expected: N/A"
+    )
+    imh9_next = (
+        f"    IMH9 next expected: {next9[1]} [{next9[0]}]"
+        if next9 else "    IMH9 next expected: N/A"
+    )
+
+    highest_sync = "    Highest synchronized state: N/A"
+    asymmetry = "    Asymmetry: N/A"
+    if idx8 is not None and idx9 is not None:
+        sync_idx = min(idx8, idx9)
+        ordered, _ = _load_primecode_states()
+        sync_hex, sync_name = ordered[sync_idx]
+        highest_sync = f"    Highest synchronized state: {sync_name} [{sync_hex}]"
+        if idx8 == idx9:
+            asymmetry = "    Asymmetry: none (both dies reached the same decoded state)"
+        elif idx8 < idx9:
+            asymmetry = f"    Asymmetry: IMH8 trails IMH9 by {idx9 - idx8} state(s)"
+        else:
+            asymmetry = f"    Asymmetry: IMH9 trails IMH8 by {idx8 - idx9} state(s)"
+
+    return "\n".join([
+        "    Reference: reset_phase_flow.txt + primecode_states.txt",
+        imh8,
+        imh8_next,
+        imh9,
+        imh9_next,
+        highest_sync,
+        asymmetry,
+    ])
+
+
+
+def _load_flow_stages():
+    """Load stage names from flow.txt for reference."""
+    cache = getattr(_load_flow_stages, "_cache", None)
+    if cache is not None:
+        return cache
+    path = Path(__file__).resolve().parent.parent / "flow.txt"
+    stages = {}
+    if path.exists():
+        for raw in path.read_text(errors="replace").splitlines():
+            line = raw.strip()
+            m = re.match(r"^STAGE\s+(\d+):\s+(.+?)\s*$", line)
+            if m:
+                stages[int(m.group(1))] = m.group(2)
+    _load_flow_stages._cache = stages
+    return stages
+
+
+def _extract_reset_matrix_from_global_flow():
+    """Parse the reset-type comparison table from global_reset_flow.txt."""
+    cache = getattr(_extract_reset_matrix_from_global_flow, "_cache", None)
+    if cache is not None:
+        return cache
+
+    path = Path(__file__).resolve().parent.parent / "global_reset_flow.txt"
+    matrix = {"COLD": {}, "WARM": {}, "GLOBAL": {}}
+    if path.exists():
+        for raw in path.read_text(errors="replace").splitlines():
+            m = re.match(r"^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|$", raw.strip())
+            if not m:
+                continue
+            feature = m.group(1).strip()
+            if feature.lower() == "feature" or feature.startswith("+"):
+                continue
+            matrix["COLD"][feature] = m.group(2).strip()
+            matrix["WARM"][feature] = m.group(3).strip()
+            matrix["GLOBAL"][feature] = m.group(4).strip()
+
+    _extract_reset_matrix_from_global_flow._cache = matrix
+    return matrix
+
+
+def _load_reset_type_matrix():
+    """Load reset-type expectations from cold/warm/global reset flow references."""
+    cache = getattr(_load_reset_type_matrix, "_cache", None)
+    if cache is not None:
+        return cache
+
+    matrix = _extract_reset_matrix_from_global_flow()
+    compact = {
+        "cold": {"cf9": "0xE", "features": [], "no_features": []},
+        "warm": {"cf9": "0x6", "features": [], "no_features": []},
+        "global": {"cf9": "0x6+etr3", "features": [], "no_features": []},
+    }
+
+    feature_map = [
+        ("PLTRST_SYNC wait", "PLTRST_SYNC"),
+        ("GBL_RST_WARN wait", "GBL_RST_WARN"),
+        ("GLOBAL_RESET_N asserted", "GLOBAL_RESET_N"),
+        ("SLP_S5/S4/S3 asserted", "SLP_S5/S4/S3"),
+        ("XX_PWRGOOD de-asserted", "PWRGOOD-deassert"),
+        ("Fuse reload", "fuse-reload"),
+        ("IceCode reload", "icecode-reload"),
+        ("Fake GO RSP W/A", "fake-go-rsp"),
+    ]
+
+    for key, bucket in (("COLD", compact["cold"]), ("WARM", compact["warm"]), ("GLOBAL", compact["global"])):
+        for feature_name, label in feature_map:
+            state = matrix.get(key, {}).get(feature_name, "").upper()
+            if state.startswith("YES"):
+                bucket["features"].append(label)
+            elif state.startswith("NO"):
+                bucket["no_features"].append(label)
+
+    _load_reset_type_matrix._cache = compact
+    return compact
+
+
+def _parse_streams_from_reset_phase_flow():
+    """Extract stream names from reset_phase_flow.txt for summary context."""
+    cache = getattr(_parse_streams_from_reset_phase_flow, "_cache", None)
+    if cache is not None:
+        return cache
+
+    path = Path(__file__).resolve().parent.parent / "reset_phase_flow.txt"
+    streams = []
+    if path.exists():
+        for raw in path.read_text(errors="replace").splitlines():
+            m = re.match(r"^STREAM\s+(\d+)\s*:\s*(.+)$", raw.strip())
+            if m:
+                streams.append(f"Stream {m.group(1)}: {m.group(2)}")
+                continue
+            m = re.match(r"^STREAM\s+(\d+)\s+--\s+(.+)$", raw.strip())
+            if m:
+                streams.append(f"Stream {m.group(1)}: {m.group(2)}")
+
+    _parse_streams_from_reset_phase_flow._cache = streams[:3]
+    return streams[:3]
+
+
+def _load_bios_phases():
+    """Load BIOS sub-phase names from bios_flow.txt."""
+    cache = getattr(_load_bios_phases, "_cache", None)
+    if cache is not None:
+        return cache
+    path = Path(__file__).resolve().parent.parent / "bios_flow.txt"
+    phases = {}
+    if path.exists():
+        for raw in path.read_text(errors="replace").splitlines():
+            line = raw.strip()
+            m = re.match(r"^STAGE\s+6\.(\d)\s+--\s+(.+?)\s*$", line)
+            if m:
+                phases[int(m.group(1))] = m.group(2)
+    if not phases:
+        phases = {0: "SEC PHASE", 1: "PEI PRE-MEMORY", 2: "PEI POST-MEMORY", 3: "DXE IPL", 4: "DXE DRIVERS", 5: "BDS DRIVERS", 6: "BOOT OPTIONS"}
+    _load_bios_phases._cache = phases
+    return phases
 
 def _cycle_log_evidence(cycle):
     evidence = [
@@ -1314,13 +1552,148 @@ def _cold_boot_recommendations(stage):
     return recs.get(stage, "  - Inspect testbench.log around last milestone")
 
 
+def _infer_bios_subphase(stage6_result):
+    """Map Stage 6 milestones to bios_flow.txt sub-phases (best-effort)."""
+    if not stage6_result or not stage6_result.milestones:
+        return "N/A"
+
+    rank = {
+        "bios_start": 0,
+        "early_pch_init": 1,
+        "start_mrc": 2,
+        "pei_memory": 3,
+        "dxe_ipl": 4,
+        "bds_boot": 5,
+        "exit_boot_svc": 6,
+        "bios_aced": 6,
+    }
+    seen = [rank[m.substage] for m in stage6_result.milestones if m.substage in rank]
+    if not seen:
+        return "N/A"
+
+    idx = max(seen)
+    phase_name = _load_bios_phases().get(idx, "")
+    return f"6.{idx} {phase_name}".strip()
+
+
+def _load_reset_flow_highlights():
+    """Load key differentiators from cold/warm/global reset flow references."""
+    cache = getattr(_load_reset_flow_highlights, "_cache", None)
+    if cache is not None:
+        return cache
+
+    base = Path(__file__).resolve().parent.parent
+    files = {
+        "cold_reset_flow.txt": [r"CF9 register write 0xE", r"PLTRST_SYNC", r"fuse reload"],
+        "warm_reset_flow.txt": [r"CF9 register value = 0x6", r"NO PWRGOOD de-assertion", r"NO fuse reload"],
+        "global_reset_flow.txt": [r"gbl_etr3", r"GBL_RST_WARN", r"GLOBAL_RESET_N"],
+    }
+
+    highlights = {}
+    for fname, patterns in files.items():
+        path = base / fname
+        picked = []
+        if path.exists():
+            lines = path.read_text(errors="replace").splitlines()
+            for pat in patterns:
+                rx = re.compile(pat, re.I)
+                hit = next((ln.strip() for ln in lines if rx.search(ln)), "")
+                if hit:
+                    picked.append(hit[:120])
+        highlights[fname] = picked
+
+    _load_reset_flow_highlights._cache = highlights
+    return highlights
+
+
+def _load_scripts_readme_hints():
+    """Load concise capability hints from scripts/README.txt."""
+    cache = getattr(_load_scripts_readme_hints, "_cache", None)
+    if cache is not None:
+        return cache
+
+    path = Path(__file__).resolve().parent / "README.txt"
+    hints = []
+    if path.exists():
+        in_supported = False
+        for raw in path.read_text(errors="replace").splitlines():
+            line = raw.rstrip()
+            if line.startswith("Supported Scenarios:"):
+                in_supported = True
+                continue
+            if in_supported and line.startswith("Output:"):
+                break
+            if in_supported and line.strip().startswith("-"):
+                hints.append(line.strip().lstrip("-").strip())
+
+    _load_scripts_readme_hints._cache = hints[:3]
+    return hints[:3]
+
+
+def _reference_usage_block(info, stages, failing_cycle=None):
+    """Render which reference .txt files were loaded and applied."""
+    flow = _load_flow_stages()
+    bios = _load_bios_phases()
+    streams = _parse_streams_from_reset_phase_flow()
+    matrix = _load_reset_type_matrix()
+    readme_hints = _load_scripts_readme_hints()
+    reset_highlights = _load_reset_flow_highlights()
+
+    stage_list = ", ".join(f"{k}:{v}" for k, v in sorted(flow.items())[:8]) if flow else "N/A"
+    bios_list = ", ".join(f"6.{k}:{v}" for k, v in sorted(bios.items())) if bios else "N/A"
+    stream_text = " | ".join(streams) if streams else "N/A"
+
+    lines = [
+        "  - flow.txt: stage metadata loaded for summary context and stage naming.",
+        f"    Loaded stages: {stage_list}",
+        "  - bios_flow.txt: BIOS 6.0-6.6 phase map loaded for Stage 6/7/11 triage.",
+        f"    Loaded BIOS phases: {bios_list}",
+        "  - reset_phase_flow.txt: Stage 5/10 stream model loaded for symmetry guidance.",
+        f"    Stream model: {stream_text}",
+        "  - primecode_states.txt: IMH primecode state-id decode + next-state inference.",
+        "  - cold_reset_flow.txt / warm_reset_flow.txt / global_reset_flow.txt: reset behavior matrix applied to flow checks.",
+        f"    cold_reset_flow.txt highlights: {'; '.join(reset_highlights.get('cold_reset_flow.txt', [])) or 'N/A'}",
+        f"    warm_reset_flow.txt highlights: {'; '.join(reset_highlights.get('warm_reset_flow.txt', [])) or 'N/A'}",
+        f"    global_reset_flow.txt highlights: {'; '.join(reset_highlights.get('global_reset_flow.txt', [])) or 'N/A'}",
+        f"  - scripts/README.txt: automation coverage hints loaded ({'; '.join(readme_hints) if readme_hints else 'N/A'}).",
+    ]
+
+    if info.get("scenario") == "reset" and failing_cycle:
+        spec = matrix.get((failing_cycle.reset_type or "").lower(), {})
+        if spec:
+            lines.append(
+                f"    Active reset profile ({failing_cycle.reset_type}): expect [{', '.join(spec.get('features', [])) or 'N/A'}], avoid [{', '.join(spec.get('no_features', [])) or 'N/A'}]"
+            )
+
+    return "\n".join(lines)
+
+
 def _reset_recommendations(cycle):
     stage = cycle.failing_stage
     rtype = cycle.reset_type
+
+    stage10_stuck = "BOOT_FSM stuck state unavailable"
+    if stage == 10:
+        states = []
+        if cycle.last_primecode_imh8:
+            _, hex8, _ = _primecode_state_meta(cycle.last_primecode_imh8)
+            states.append(
+                f"IMH8={cycle.last_primecode_imh8} [{hex8}] @ line {cycle.last_primecode_imh8_line}"
+                if hex8 else f"IMH8={cycle.last_primecode_imh8} @ line {cycle.last_primecode_imh8_line}"
+            )
+        if cycle.last_primecode_imh9:
+            _, hex9, _ = _primecode_state_meta(cycle.last_primecode_imh9)
+            states.append(
+                f"IMH9={cycle.last_primecode_imh9} [{hex9}] @ line {cycle.last_primecode_imh9_line}"
+                if hex9 else f"IMH9={cycle.last_primecode_imh9} @ line {cycle.last_primecode_imh9_line}"
+            )
+        if states:
+            stage10_stuck = " / ".join(states)
+
     recs = {
         8: "  - Verify post-setup script loaded\n  - Check os_reset_triggers.simics dispatch table",
         9: f"  - Check serconsole for errors before hardware entry\n  - Verify {'PLTRST_SYNC' if rtype != 'GLOBAL' else 'GBL_RST_WARN'} completion\n  - Check if VP quiesce succeeded",
-        10: "  - See reset_phase_flow.txt for HWRS sub-phase detail\n  - Check BOOT_FSM stuck state (which 0x?? value)\n",
+        10: f"  - See reset_phase_flow.txt for HWRS sub-phase detail\n  - Check BOOT_FSM stuck state: {stage10_stuck}\n",
         11: "  - Check if IDI Mux was enabled after RESET_PHASE_6\n  - See bios_flow.txt for BIOS sub-phases\n  - Review auto-generated BIOS Issue Analysis section above\n  - Check for BIOS hang vs VP/RTL handoff issue",
         12: "  - Check serconsole for second OS boot errors\n  - Verify PPR workload starts on second boot\n  - Check for kernel panic or OOM",
     }

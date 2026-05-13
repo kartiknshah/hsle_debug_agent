@@ -102,6 +102,8 @@
   Signature    : {signature}
   Evidence     :
 {evidence}
+  Primecode Insights :
+{primecode_states}
 
   Root Cause
   ----------
@@ -118,24 +120,16 @@
 {recommendations}
 
 ================================================================================
+  REFERENCE KNOWLEDGE APPLIED
+================================================================================
+
+{reference_usage}
+
+================================================================================
   KEY LOG EVIDENCE
 ================================================================================
 
 {log_evidence}
-
-================================================================================
-  ADDITIONAL RESET CYCLE TEMPLATE
-  (Copy this block for each additional reset cycle in back-to-back scenarios)
-================================================================================
-  
-  STAGE PROGRESS — RESET CYCLE N
-  -----------------------------------------------
-  Stage 8  (Reset Trigger)        : <PASS | FAIL>   Reset Type: <type>
-  Stage 9  (Reset Hardware Entry) : <PASS | FAIL>
-  Stage 10 (Nth Boot RTL)         : <PASS | FAIL>
-  Stage 11 (Nth BIOS Boot)        : <PASS | FAIL>
-  Stage 12 (Nth OS Boot)          : <PASS | FAIL>
-  Stage 13 (Test Termination)     : <PASS | NOT REACHED>
 
 ================================================================================
   END OF HSLE RUN DEBUG SUMMARY
