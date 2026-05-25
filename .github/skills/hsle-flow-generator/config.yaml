@@ -1,0 +1,52 @@
+# HSLE Flow Generator — Platform Configuration
+# -----------------------------------------------
+# Defaults to DMR 1-Socket MCP ICI emulation on ZeBu ZSE5.
+# Change `platform` + `topology` + `dies` to extend to COR-SP/NWP.
+
+platform: DMR
+stepping: A0              # e.g. A0, A1, B0
+topology: MCP_ICI         # MCP_ICI | SP5 | NWP_ICI | COR_SP
+
+dies:
+  imh_count: 2            # number of IMH dies (imh8, imh9)
+  cbb_count: 4            # number of CBB dies
+  package: MCP            # MCP | SP5-LGA
+
+interconnect:
+  type: UCIe_fullstack     # UCIe_fullstack | UCIe_embedded | HBI
+  ici_version: ICI_2_0    # ICI generation
+
+hsle_engine: ZSE5         # ZSE5 | ZSE6 | PALLADIUM (future)
+fmod_enabled: true        # true = MRC DDR5 training bypassed via fast-model
+
+# Spec project IDs
+# Leave empty [] to auto-discover via mcp_co-design_codesign-get-spec-sources.
+# Populate explicitly to pin to specific spec versions.
+project_ids: []
+
+# HSD tenants for feature and sighting queries
+hsd_tenants:
+  features: server_platf.bug
+  sightings: sighting_central.sighting
+
+# Stage scope
+# all = run all discovered stages (recommended)
+# Specific range examples: "0-8" | "5-7" | "6"
+stages: all
+
+# Output format
+# txt  = flow.txt ASCII tree only
+# md   = flow.md Markdown + Mermaid only
+# both = write both (recommended)
+output_format: both
+
+# Skill mode
+# generate = fresh spec-to-flow pipeline (writes flow.txt + flow.md)
+# validate = runs Phase A-C + diff only (writes flow_validation_report.md, no edits to flow files)
+# update   = full pipeline, merges new findings into existing flow files
+mode: generate
+
+# Per-stage keyword overrides (optional — queries.yaml provides defaults)
+# stage_keywords:
+#   5: "BIOS UEFI post-code serconsole"
+#   6: "OS linux kernel handoff"
