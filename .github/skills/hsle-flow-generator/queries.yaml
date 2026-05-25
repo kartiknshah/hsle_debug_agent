@@ -1,0 +1,129 @@
+# HSLE Flow Generator — MCP Query Templates
+# -------------------------------------------
+# Each template uses {{STAGE_NAME}}, {{STAGE_KEYWORD}}, {{PLATFORM}} as substitution tokens.
+# These are filled in at skill runtime from config.yaml and the spec stage list from Phase A.
+
+# -------------------------------------------------------------------
+# PHASE A — Architectural Discovery
+# -------------------------------------------------------------------
+
+# Step A2 — Top-level execution model (called once)
+stage_model_query: |
+  What is the complete and ordered execution sequence for a {{PLATFORM}} MCP multi-die ICI
+  HSLE emulation run on ZeBu ZSE5 hardware?
+  The configuration is: MCP 1-Socket, 2 IMH dies (imh8 + imh9), 4 CBB dies, UCIe fullstack ICI.
+  List all major execution phases from SPARK framework initialization through OS boot and test
+  termination, in architectural order.
+  For each phase specify:
+  1. The architectural name and role of that phase
+  2. What hardware or firmware subsystem drives it
+  3. Its defined entry trigger (what must be true for it to start)
+  4. Its defined exit/completion condition
+  5. Any ordering constraint relative to other phases (must precede / must follow)
+  Include: hardware reset sequencing, firmware loading order (S3M, primecode, pcode/acode),
+  inter-die link initialization (UCIe, ICI, D2D), BIOS UEFI phases, and OS handoff.
+
+# Step A3 — Per-stage deep dive template (called per stage)
+stage_deep_dive_template: |
+  For the {{STAGE_NAME}} phase of {{PLATFORM}} MCP ICI HSLE emulation:
+  1. What are the architectural prerequisites (what prior phases must have completed)?
+  2. What is the exact entry trigger or enabling condition?
+  3. Which hardware and firmware components are active or transitioning in this phase?
+     Include: IMH, CBB, UCIe, ICI, S3M, primecode, pcode, BIOS, OS as applicable.
+  4. What inter-die communication occurs (UCIe link states, ICI transactions, D2D protocol)?
+  5. What constitutes a successful completion of this phase (exit criteria)?
+  6. What are the spec-defined error conditions, timeout thresholds, or failure modes?
+  7. What diagnostic registers or observable signals indicate the phase state?
+
+# Step A4 — BIOS boot architecture deep dive (called once)
+bios_architecture_query: |
+  What is the {{PLATFORM}} OakStream UEFI BIOS boot architecture from hardware reset vector
+  (0xFFFFFFF0) through ExitBootServices and OS handoff?
+  Provide the complete ordered sequence of BIOS phases including:
+  1. SEC phase: CAR setup, reset vector execution, what POST codes are emitted
+  2. PEI pre-memory phase: what PEIMs load, what hardware init occurs, DDR5 detection
+  3. FSP-M / MRC phase: what DDR5 initialization steps run, what is bypassed in fmod mode
+  4. Post-memory PEI phase: what happens after PeiInstallPeiMemory
+  5. DXE phase: CORE load, driver dispatch order, NVMe / storage enumeration
+  6. BDS phase: boot device selection, GRUB handoff
+  7. OS handoff: ExitBootServices, kernel decompression, Linux boot
+  For each phase: entry condition, exit condition, I/O port 0x80 POST codes, and UART
+  serconsole output pattern.
+  Note any behavior differences when MRC/DDR5 training is bypassed (fmod mode).
+
+# Step A5 — Reset phase architecture (called once)
+reset_phase_query: |
+  What is the {{PLATFORM}} MCP hardware reset sequencing architecture for a 2-IMH 4-CBB
+  ICI topology on ZeBu ZSE5?
+  Define each RESET_PHASE step (RESET_PHASE_1 through RESET_PHASE_6 or however many are
+  architecturally defined):
+  1. What hardware blocks are released or initialized at each phase?
+  2. What signals gate the transition to the next phase?
+  3. What is the role of the hybrid switch point and at which phase does it occur?
+  4. What is the architectural relationship between IMH reset phases and CBB reset phases?
+  5. What UCLOCK ungating, IDI MUX enabling, and VP core enabling steps are ordered by spec?
+  6. What are the completion conditions signaling RESET_PHASE_6_INFRA complete?
+
+# -------------------------------------------------------------------
+# PHASE B — Feature HSD Mapping — keyword sets per stage
+# -------------------------------------------------------------------
+# Used to build the codesign-ask-hsd-agent and HSDIndexTool queries.
+# stage_keywords[N] applies to the Nth spec-derived stage.
+# If a stage isn't listed here, use {{STAGE_NAME}} verbatim.
+
+stage_hsd_keywords:
+  # Stage 0 — SPARK/emulation framework init
+  0: "SPARK emulation framework initialization ZeSt"
+  # Stage 1 — Die reset and power sequencing
+  1: "IMH CBB power sequencing reset deassertion RESET_PHASE"
+  # Stage 2 — Firmware loading (S3M, primecode, pcode)
+  2: "S3M primecode pcode acode firmware load authentication"
+  # Stage 3 — UCIe / ICI link training
+  3: "UCIe ICI link training D2D protocol PHY calibration"
+  # Stage 4 — Post-link infrastructure init
+  4: "INFRA complete IDI MUX UCLOCK VP core enable"
+  # Stage 5 — BIOS/UEFI bring-up
+  5: "BIOS UEFI SEC PEI DXE MRC DDR5 POST code serconsole"
+  # Stage 6 — OS boot
+  6: "OS Linux kernel ExitBootServices GRUB handoff"
+  # Stage 7 — Workload / test execution
+  7: "workload test execution cache coherency ICI transaction"
+  # Stage 8 — Test termination / teardown
+  8: "test termination PASS FAIL flush teardown ZeSt exit"
+
+# -------------------------------------------------------------------
+# PHASE C — Debug Indicator Discovery — per-stage context
+# -------------------------------------------------------------------
+# Additional context appended to the DebugAssistantAgentTool query per stage.
+
+stage_debug_context:
+  0: "Include: SPARK logs, ZeSt init messages, emulation engine startup."
+  1: "Include: reset_controller log, ITP reset sequence, power domain signals."
+  2: "Include: S3M UART log, authentication status codes, pcode load confirmation."
+  3: "Include: UCIe PHY training log, ICI state machine transitions, link-up patterns."
+  4: "Include: INFRA complete signal, post-training register state, emu.engine messages."
+  5: "Include: serconsole POST code sequence, debug_port output, MRC training log if not fmod."
+  6: "Include: Linux kernel messages in serconsole, ExitBootServices pattern, GRUB log."
+  7: "Include: test harness stdout, ICI transaction logs, cache coherency checker output."
+  8: "Include: PASS/FAIL string patterns, ZeSt exit code, teardown sequence in emu.engine."
+
+# -------------------------------------------------------------------
+# PHASE B — Sighting HSD query template (per stage)
+# -------------------------------------------------------------------
+sighting_query_template: |
+  DMR MCP ICI HSLE {{STAGE_NAME}} {{STAGE_KEYWORD}} failure hang timeout block sighting
+
+# -------------------------------------------------------------------
+# PHASE C — Debug indicator query template (per stage)
+# -------------------------------------------------------------------
+debug_indicator_query_template: |
+  For {{PLATFORM}} MCP ICI HSLE emulation at the {{STAGE_NAME}} phase:
+  1. What are the observable indicators in testbench.log that this phase has completed
+     successfully? Include specific log message patterns, prefixes, signal names, or
+     POST code values.
+  2. What are the observable indicators that this phase has failed or timed out?
+  3. What is the recommended first debug step when this phase does not complete?
+  4. What log streams are active during this phase
+     (serconsole / debug_port / emu.engine / emu.devices / RTL stdout)?
+  5. Are there specific grep patterns a validation engineer would use to confirm stage passed?
+  {{STAGE_DEBUG_CONTEXT}}

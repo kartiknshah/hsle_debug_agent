@@ -16,6 +16,10 @@ DMR MCP ICI HSLE (ZeBu ZSE5) emulation runs.
       bios_flow.txt                    # BIOS boot sub-phase flow reference (Stage 6.0–6.6, serconsole + debug_port)
     bios-issue-analyzer/
       SKILL.md                         # BIOS error decoder skill (EWL/IPSD/RC Fatal/Assert/POST)
+    hsle-flow-generator/
+      SKILL.md                         # Spec-first golden flow generator (5-phase MCP procedure)
+      config.yaml                      # Platform parameters (DMR MCP ICI, extensible to COR-SP/NWP)
+      queries.yaml                     # Stage-specific MCP query templates
       scripts/
         decode_ewl.py                  # EWL + IPSD + RC Fatal log parser & decoder
         decode_post_code.py            # BIOS POST code / ACPI debug code decoder
@@ -41,6 +45,7 @@ DMR MCP ICI HSLE (ZeBu ZSE5) emulation runs.
 |-------|---------|---------|
 | `hsle-run-debugger` | Stage-by-stage HSLE run analysis | 9-stage golden flow comparison, milestone grep, failure signature matching |
 | `bios-issue-analyzer` | Stage 6/7 BIOS failure, or standalone BIOS log analysis | Decodes EWL/IPSD/RC Fatal/ASSERT/POST codes from serconsole output or raw BIOS logs |
+| `hsle-flow-generator` | Generate/validate/update golden HSLE flow from Intel specs and CBB feature HSDs | Spec-first golden flow: derives all stages from Co-Design specs and wikis, maps CBB feature HSDs per stage, identifies blocking sightings, diffs against current flow.txt, emits flow.txt + flow.md + flow_validation_report.md |
 
 ## How It Works
 
